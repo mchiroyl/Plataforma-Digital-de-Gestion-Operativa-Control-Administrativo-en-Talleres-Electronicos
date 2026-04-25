@@ -1,0 +1,15 @@
+{
+  "name": "plataforma-talleres-electronicos",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Plataforma Digital de Gestion Operativa para el Fortalecimiento del Control Administrativo en Talleres Electronicos",
+  "scripts": {
+    "install:all": "npm install --prefix backend && npm install --prefix frontend",
+    "dev:backend": "npm run start:dev --prefix backend",
+    "dev:api": "npm run dev:backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "db:migrate": "npm run prisma:migrate --prefix backend",
+    "db:seed": "npm run prisma:seed --prefix backend"
+  }
+}

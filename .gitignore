@@ -1,0 +1,62 @@
+# ─── Dependencias ────────────────────────────────────────────────────────────
+node_modules/
+**/node_modules/
+
+# ─── Variables de entorno (nunca subir secretos) ─────────────────────────────
+.env
+backend/.env
+frontend/.env
+# Mantener ejemplos como referencia
+!.env.example
+!backend/.env.example
+!frontend/.env.example
+
+# ─── Compilados y bundles ─────────────────────────────────────────────────────
+dist/
+**/dist/
+build/
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+*.err.log
+*.out.log
+logs/
+
+# ─── WhatsApp — sesión local (contiene tokens de autenticación) ───────────────
+backend/.wwebjs_auth/
+.wwebjs_auth/
+.wwebjs_cache/
+
+# ─── Prisma — cliente generado (se regenera con prisma generate) ──────────────
+backend/node_modules/.prisma/
+
+# ─── RLS listo (archivo temporal con credenciales en texto plano) ─────────────
+backend/prisma/security/rls_ready.sql
+
+# ─── Docs — contenido interno no público ─────────────────────────────────────
+docs/
+
+# ─── Sistema operativo ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Editores e IDEs ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ─── Coverage y tests ────────────────────────────────────────────────────────
+coverage/
+**/coverage/
+
+# ─── Caché de herramientas ───────────────────────────────────────────────────
+.npm
+.eslintcache
+.cache/
+.parcel-cache/
+*.tsbuildinfo

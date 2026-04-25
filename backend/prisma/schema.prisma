@@ -1,0 +1,410 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleName {
+  ADMIN
+  RECEPCIONISTA
+  TECNICO
+}
+
+enum OrderStatus {
+  CREADO
+  EN_REVISION
+  ESPERANDO_PRESUPUESTO
+  PRESUPUESTO_ENVIADO
+  EN_REPARACION
+  LISTO_PARA_RECOGER
+  FINALIZADO
+  PRESUPUESTO_RECHAZADO
+  DEVUELTO_SIN_REPARAR
+}
+
+enum OrderPriority {
+  BAJA
+  NORMAL
+  ALTA
+  URGENTE
+}
+
+enum QuoteType {
+  REPUESTO
+  MANO_OBRA
+  OTRO
+}
+
+enum PaymentMethod {
+  EFECTIVO
+  TARJETA
+  TRANSFERENCIA
+  QR_PAGO
+}
+
+enum PaymentType {
+  ANTICIPO
+  PAGO
+  REEMBOLSO
+}
+
+enum InventoryMovementType {
+  ENTRADA_COMPRA
+  SALIDA_ORDEN
+  SALIDA_VENTA
+  AJUSTE_POSITIVO
+  AJUSTE_NEGATIVO
+}
+
+enum AuditAction {
+  INSERT
+  UPDATE
+  DELETE
+}
+
+model Role {
+  id          Int      @id @default(autoincrement())
+  name        RoleName @unique
+  description String?
+  users       User[]
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  roleId       Int
+  username     String   @unique
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  role             Role                   @relation(fields: [roleId], references: [id])
+  technician       Technician?
+  createdOrders    RepairOrder[]          @relation("CreatedOrders")
+  deliveredOrders  RepairOrder[]          @relation("DeliveredOrders")
+  statusChanges    StatusHistory[]
+  payments         Payment[]
+  inventorySales   InventorySale[]
+  inventoryMoves   InventoryMovement[]
+  whatsappMessages WhatsappNotification[]
+  updatedSettings  ShopSettings[]
+  auditLogs        AuditLog[]
+}
+
+model Client {
+  id        Int      @id @default(autoincrement())
+  dpi       String?  @unique
+  nit       String?  @unique
+  firstName String
+  lastName  String
+  phone     String
+  email     String?
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  equipment      Equipment[]
+  orders         RepairOrder[]
+  inventorySales InventorySale[]
+}
+
+model EquipmentType {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  equipment  Equipment[]
+  faultTypes FaultType[]
+}
+
+model FaultCategory {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  faultTypes FaultType[]
+}
+
+model FaultType {
+  id                 Int      @id @default(autoincrement())
+  categoryId         Int
+  equipmentTypeId    Int?
+  name               String
+  description        String?
+  requiresCredential Boolean  @default(false)
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+
+  category      FaultCategory    @relation(fields: [categoryId], references: [id])
+  equipmentType EquipmentType?   @relation(fields: [equipmentTypeId], references: [id])
+  orders        OrderFaultType[]
+}
+
+model Equipment {
+  id                  Int      @id @default(autoincrement())
+  clientId            Int
+  equipmentTypeId     Int
+  brand               String
+  model               String
+  serialNumber        String?  @unique
+  color               String?
+  physicalDescription String?
+  accessories         String?
+  createdAt           DateTime @default(now())
+
+  client        Client        @relation(fields: [clientId], references: [id])
+  equipmentType EquipmentType @relation(fields: [equipmentTypeId], references: [id])
+  orders        RepairOrder[]
+}
+
+model Technician {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @unique
+  code      String   @unique
+  firstName String
+  lastName  String
+  specialty String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user   User?         @relation(fields: [userId], references: [id])
+  orders RepairOrder[]
+}
+
+model RepairOrder {
+  id                    Int           @id @default(autoincrement())
+  orderCode             String        @unique
+  trackingToken         String        @unique
+  equipmentId           Int
+  clientId              Int
+  technicianId          Int?
+  reportedIssue         String
+  additionalFaultDetail String?
+  diagnosis             String?
+  unlockCredentialType  String?
+  unlockCredentialValue String?
+  unlockCredentialNotes String?
+  status                OrderStatus   @default(CREADO)
+  priority              OrderPriority @default(NORMAL)
+  totalCost             Decimal       @default(0) @db.Decimal(10, 2)
+  warrantyDays          Int           @default(0)
+  estimatedHours        Decimal?      @db.Decimal(6, 2)
+  actualHours           Decimal?      @db.Decimal(6, 2)
+  intakeDate            DateTime      @default(now())
+  estimatedDeliveryDate DateTime?
+  actualDeliveryDate    DateTime?
+  ticketPrinted         Boolean       @default(false)
+  deliveredToName       String?
+  deliveredToDpi        String?
+  pickupCodePresented   Boolean       @default(false)
+  quoteApproved         Boolean?
+  approvalMethod        String?
+  approvedAt            DateTime?
+  createdById           Int
+  deliveredById         Int?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  equipment    Equipment              @relation(fields: [equipmentId], references: [id])
+  client       Client                 @relation(fields: [clientId], references: [id])
+  technician   Technician?            @relation(fields: [technicianId], references: [id])
+  createdBy    User                   @relation("CreatedOrders", fields: [createdById], references: [id])
+  deliveredBy  User?                  @relation("DeliveredOrders", fields: [deliveredById], references: [id])
+  faults       OrderFaultType[]
+  history      StatusHistory[]
+  quotes       QuoteDetail[]
+  payments     Payment[]
+  whatsappLogs WhatsappNotification[]
+}
+
+model OrderFaultType {
+  orderId               Int
+  faultTypeId           Int
+  additionalDescription String?
+  registeredAt          DateTime @default(now())
+
+  order     RepairOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  faultType FaultType   @relation(fields: [faultTypeId], references: [id])
+
+  @@id([orderId, faultTypeId])
+}
+
+model StatusHistory {
+  id               Int          @id @default(autoincrement())
+  orderId          Int
+  previousStatus   OrderStatus?
+  newStatus        OrderStatus
+  comment          String?
+  whatsappNotified Boolean      @default(false)
+  changedById      Int
+  changedAt        DateTime     @default(now())
+
+  order     RepairOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedBy User        @relation(fields: [changedById], references: [id])
+}
+
+model QuoteDetail {
+  id          Int       @id @default(autoincrement())
+  orderId     Int
+  sparePartId Int?
+  description String
+  type        QuoteType
+  quantity    Decimal   @default(1) @db.Decimal(8, 2)
+  unitPrice   Decimal   @db.Decimal(10, 2)
+  subtotal    Decimal   @db.Decimal(10, 2)
+  createdAt   DateTime  @default(now())
+
+  order     RepairOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sparePart SparePart?  @relation(fields: [sparePartId], references: [id])
+}
+
+model SparePart {
+  id                  Int      @id @default(autoincrement())
+  internalCode        String   @unique
+  name                String
+  description         String?
+  brand               String?
+  model               String?
+  series              String?
+  category            String
+  quality             String?
+  color               String?
+  compatibleWith      String?
+  purchasePrice       Decimal  @db.Decimal(10, 2)
+  publicSalePrice     Decimal  @db.Decimal(10, 2)
+  technicianSalePrice Decimal? @db.Decimal(10, 2)
+  currentStock        Int      @default(0)
+  minimumStock        Int      @default(3)
+  location            String?
+  supplier            String?
+  sourceSheet         String?
+  warrantyPolicy      String?
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @default(now()) @updatedAt
+
+  quotes    QuoteDetail[]
+  movements InventoryMovement[]
+  saleItems InventorySaleItem[]
+}
+
+model InventorySale {
+  id             Int           @id @default(autoincrement())
+  saleCode       String        @unique
+  clientId       Int
+  totalAmount    Decimal       @db.Decimal(10, 2)
+  paymentMethod  PaymentMethod
+  notes          String?
+  registeredById Int
+  createdAt      DateTime      @default(now())
+
+  client       Client              @relation(fields: [clientId], references: [id])
+  registeredBy User                @relation(fields: [registeredById], references: [id])
+  items        InventorySaleItem[]
+}
+
+model InventorySaleItem {
+  id          Int     @id @default(autoincrement())
+  saleId      Int
+  sparePartId Int
+  quantity    Int
+  unitPrice   Decimal @db.Decimal(10, 2)
+  subtotal    Decimal @db.Decimal(10, 2)
+
+  sale      InventorySale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  sparePart SparePart     @relation(fields: [sparePartId], references: [id])
+}
+
+model InventoryMovement {
+  id             Int                   @id @default(autoincrement())
+  sparePartId    Int
+  movementType   InventoryMovementType
+  quantity       Int
+  unitPrice      Decimal               @db.Decimal(10, 2)
+  referenceType  String?
+  referenceId    Int?
+  notes          String?
+  registeredById Int
+  createdAt      DateTime              @default(now())
+
+  sparePart    SparePart @relation(fields: [sparePartId], references: [id])
+  registeredBy User      @relation(fields: [registeredById], references: [id])
+}
+
+model Payment {
+  id             Int           @id @default(autoincrement())
+  orderId        Int
+  amount         Decimal       @db.Decimal(10, 2)
+  paymentMethod  PaymentMethod
+  reference      String?
+  paymentType    PaymentType   @default(PAGO)
+  notes          String?
+  registeredById Int
+  createdAt      DateTime      @default(now())
+
+  order        RepairOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  registeredBy User        @relation(fields: [registeredById], references: [id])
+}
+
+model WhatsappNotification {
+  id               Int      @id @default(autoincrement())
+  orderId          Int?
+  destinationPhone String
+  template         String
+  deliveryStatus   String
+  message          String?
+  apiResponse      Json?
+  sentById         Int?
+  sentAt           DateTime @default(now())
+
+  order  RepairOrder? @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  sentBy User?        @relation(fields: [sentById], references: [id])
+}
+
+model AuditLog {
+  id             BigInt      @id @default(autoincrement())
+  tableName      String
+  recordId       String?
+  action         AuditAction
+  changedById    Int?
+  changedByRole  String?
+  previousValues Json?
+  newValues      Json?
+  changedFields  String[]
+  ipAddress      String?
+  userAgent      String?
+  reason         String?
+  createdAt      DateTime    @default(now())
+
+  changedBy User? @relation(fields: [changedById], references: [id], onDelete: SetNull)
+
+  @@index([tableName, recordId])
+  @@index([changedById, createdAt])
+  @@index([action, createdAt])
+}
+
+model ShopSettings {
+  id                  Int      @id @default(1)
+  shopName            String
+  slogan              String?
+  logoUrl             String?
+  phone               String
+  whatsapp            String
+  address             String?
+  contactEmail        String?
+  defaultWarrantyDays Int      @default(30)
+  termsText           String?
+  privacyText         String?
+  currency            String   @default("GTQ")
+  updatedById         Int?
+  updatedAt           DateTime @updatedAt
+
+  updatedBy User? @relation(fields: [updatedById], references: [id])
+}
