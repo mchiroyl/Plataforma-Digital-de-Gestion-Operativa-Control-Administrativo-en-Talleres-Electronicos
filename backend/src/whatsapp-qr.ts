@@ -1,7 +1,7 @@
 import { Client, LocalAuth } from 'whatsapp-web.js';
 import * as qrcode from 'qrcode-terminal';
 import * as fs from 'node:fs';
-import { WHATSAPP_WEB_CACHE, WHATSAPP_WEB_VERSION } from './modules/whatsapp/infrastructure/whatsapp-options';
+import { WHATSAPP_HEADLESS, WHATSAPP_PROTOCOL_TIMEOUT_MS, WHATSAPP_WEB_CACHE, WHATSAPP_WEB_VERSION } from './modules/whatsapp/infrastructure/whatsapp-options';
 
 function resolveBrowserPath() {
   const candidates = [
@@ -23,32 +23,29 @@ const executablePath = resolveBrowserPath();
 
 console.log('Iniciando cliente WhatsApp...');
 console.log(`Navegador detectado: ${executablePath ?? 'Puppeteer default'}`);
-console.log(`Version WhatsApp Web: ${WHATSAPP_WEB_VERSION}`);
+console.log(`Version WhatsApp Web: ${WHATSAPP_WEB_VERSION ?? 'default de whatsapp-web.js'}`);
+console.log(`Modo headless: ${WHATSAPP_HEADLESS}`);
 console.log('Cuando aparezca el QR, escaneelo desde WhatsApp > Dispositivos vinculados.');
 
-const client = new Client({
+const clientOptions: ConstructorParameters<typeof Client>[0] = {
   authStrategy: new LocalAuth({ clientId: 'plataforma-talleres-electronicos' }),
-  webVersion: WHATSAPP_WEB_VERSION,
-  webVersionCache: WHATSAPP_WEB_CACHE,
   puppeteer: {
-    headless: true,
+    headless: WHATSAPP_HEADLESS,
+    protocolTimeout: WHATSAPP_PROTOCOL_TIMEOUT_MS,
     executablePath,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-extensions',
-      '--disable-gpu',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-background-networking',
-      '--disable-sync',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   },
   takeoverOnConflict: true,
   takeoverTimeoutMs: 0,
   qrMaxRetries: 0,
-});
+};
+
+if (WHATSAPP_WEB_VERSION) {
+  clientOptions.webVersion = WHATSAPP_WEB_VERSION;
+  clientOptions.webVersionCache = WHATSAPP_WEB_CACHE;
+}
+
+const client = new Client(clientOptions);
 
 client.on('qr', (qr) => {
   console.clear();

@@ -664,7 +664,69 @@ export class CoreService {
       });
       if (approved) await this.consumeOrderSpareParts(tx, order.id, order.createdById);
       return updated;
+    }, { timeout: 20000, maxWait: 10000 });
+  }
+
+  async customerQuoteDecisionFromWhatsapp(orderCode: string, approved: boolean, sourcePhone: string, customerName?: string, comment?: string) {
+    const normalizedName = customerName ? normalizePlainText(customerName) : undefined;
+    const normalizedComment = comment ? normalizePlainText(comment) : undefined;
+    const order = await this.prisma.repairOrder.findFirst({
+      where: { orderCode },
+      include: { quotes: true, client: true },
     });
+    if (!order) throw new NotFoundException('Orden no encontrada');
+    if (!this.phonesMatch(order.client.phone, sourcePhone)) {
+      throw new BadRequestException('El numero que respondio no coincide con el cliente de la orden');
+    }
+    if (order.quotes.length === 0) throw new BadRequestException('Aun no hay presupuesto para aceptar o rechazar');
+    if (order.quoteApproved === approved && ['EN_REPARACION', 'PRESUPUESTO_RECHAZADO'].includes(order.status)) {
+      return order;
+    }
+    if (!['PRESUPUESTO_ENVIADO', 'EN_REVISION', 'ESPERANDO_PRESUPUESTO'].includes(order.status)) {
+      throw new BadRequestException('Esta orden ya no esta pendiente de decision de presupuesto');
+    }
+    const nextStatus = approved ? 'EN_REPARACION' : 'PRESUPUESTO_RECHAZADO';
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.repairOrder.update({
+        where: { id: order.id },
+        data: {
+          quoteApproved: approved,
+          approvalMethod: 'WHATSAPP',
+          approvedAt: new Date(),
+          status: nextStatus,
+        },
+      });
+      await tx.statusHistory.create({
+        data: {
+          orderId: order.id,
+          previousStatus: order.status,
+          newStatus: nextStatus,
+          comment: `${approved ? 'Presupuesto aprobado' : 'Presupuesto rechazado'} por WhatsApp${normalizedName ? `: ${normalizedName}` : ''}${normalizedComment ? `. ${normalizedComment}` : ''}`,
+          changedById: order.createdById,
+        },
+      });
+      if (approved) await this.consumeOrderSpareParts(tx, order.id, order.createdById);
+      return updated;
+    }, { timeout: 20000, maxWait: 10000 });
+  }
+
+  async findPendingQuoteOrdersByPhone(sourcePhone: string) {
+    return this.prisma.repairOrder.findMany({
+      where: {
+        client: {
+          phone: {
+            not: undefined,
+          },
+        },
+        status: {
+          in: ['PRESUPUESTO_ENVIADO', 'EN_REVISION', 'ESPERANDO_PRESUPUESTO'],
+        },
+      },
+      include: {
+        client: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    }).then((orders) => orders.filter((order) => this.phonesMatch(order.client.phone, sourcePhone)));
   }
 
   private async orderPaidTotal(orderId: number) {
@@ -739,5 +801,13 @@ export class CoreService {
       }
       throw error;
     }
+  }
+
+  private phonesMatch(left: string, right: string) {
+    const normalize = (value: string) => {
+      const digits = value.replace(/\D/g, '');
+      return digits.length > 8 ? digits.slice(-8) : digits;
+    };
+    return normalize(left) !== '' && normalize(left) === normalize(right);
   }
 }

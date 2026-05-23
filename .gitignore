@@ -181,3 +181,13 @@ ehthumbs.db
 coverage/
 **/coverage/
 .nyc_output/
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BLOQUE 15 — DOCUMENTOS ACADÉMICOS Y RENDERS DE TESIS
+# Evita la indexación pública de borradores de tesis, marcos teóricos o matrices.
+# ─────────────────────────────────────────────────────────────────────────────
+*.docx
+docx_render_marco/
+docx_render_marco_v1/
+scripts/generar_marco_teorico_docx.py

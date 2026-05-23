@@ -141,6 +141,6 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
       `;
 
       return this.requestSecurityContext.run({ prisma: tx, security }, work);
-    });
+    }, { timeout: 20000, maxWait: 10000 });
   }
 }

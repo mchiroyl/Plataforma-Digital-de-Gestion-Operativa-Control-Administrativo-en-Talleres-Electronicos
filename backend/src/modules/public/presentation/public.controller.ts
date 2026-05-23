@@ -40,8 +40,8 @@ export class PublicController {
       return;
     }
 
-    const frontendUrl = process.env.PUBLIC_FRONTEND_URL ?? 'http://localhost:5173';
-    const trackingUrl = `${frontendUrl}/rastreo/${order.orderCode}?token=${order.trackingToken}`;
+    const frontendUrl = (process.env.PUBLIC_FRONTEND_URL ?? 'http://localhost:5173').replace(/\/$/, '');
+    const trackingUrl = `${frontendUrl}/#/rastreo/${encodeURIComponent(order.orderCode)}?token=${encodeURIComponent(order.trackingToken)}`;
     const qr = await QRCode.toDataURL(trackingUrl, { margin: 1, width: 180 });
     const faults = order.faults.length
       ? order.faults.map((item) => `<li>${escapeHtml(item.faultType.name)}</li>`).join('')

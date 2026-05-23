@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 
 const API_URL = import.meta.env.VITE_API_URL ?? `${location.protocol}//${location.hostname}:3000/api`
+const PUBLIC_FRONTEND_URL = import.meta.env.VITE_PUBLIC_FRONTEND_URL ?? location.origin
 
 type Session = {
   accessToken: string
@@ -31,6 +32,47 @@ type FaultType = { id: number; name: string; requiresCredential: boolean; catego
 type Technician = { id: number; code: string; firstName: string; lastName: string; specialty?: string }
 type SparePart = { id: number; internalCode: string; name: string; category: string; brand?: string; model?: string; publicSalePrice: string; purchasePrice: string; currentStock: number; minimumStock: number }
 type InventorySale = { id: number; saleCode: string; totalAmount: string; paymentMethod: string; createdAt: string; client: Client; items: { id: number; quantity: number; unitPrice: string; subtotal: string; sparePart: SparePart }[] }
+type WhatsappDraft = { orderId?: number; phone: string; message: string; title: string }
+type WhatsappStatusResponse = {
+  started: boolean
+  initializing: boolean
+  ready: boolean
+  hasQr: boolean
+  qrCodeDataUrl?: string
+  lastError?: string
+  channelKey?: string
+  channelLabel?: string
+}
+type WhatsappMessageOrderSummary = {
+  id: number
+  orderCode: string
+  status: string
+  trackingToken: string
+  client: Client
+}
+type IncomingWhatsappMessage = {
+  id: number
+  orderId?: number | null
+  destinationPhone: string
+  template: string
+  deliveryStatus: string
+  message?: string
+  sentAt: string
+  apiResponse?: { pushName?: string | null; direction?: string | null; channelKey?: string | null; channelLabel?: string | null }
+  order?: WhatsappMessageOrderSummary | null
+}
+type WhatsappConversation = {
+  phone: string
+  phoneDigits: string
+  displayName: string
+  channelKey: string
+  channelLabel: string
+  client?: Client
+  order?: WhatsappMessageOrderSummary
+  items: IncomingWhatsappMessage[]
+  lastMessageAt: string
+  unreadCount: number
+}
 type Order = {
   id: number
   orderCode: string
@@ -75,15 +117,17 @@ function useApi(session: Session | null, onUnauthorized?: () => void) {
 }
 
 function App() {
-  const trackingMatch = location.pathname.match(/^\/rastreo\/([^/]+)/)
-  if (trackingMatch) return <TrackingPage orderCode={trackingMatch[1]} />
+  const trackingRoute = resolveTrackingRoute()
+  if (trackingRoute) return <TrackingPage orderCode={trackingRoute.orderCode} token={trackingRoute.token} />
 
   const [session, setSession] = useState<Session | null>(() => {
     const raw = localStorage.getItem('session')
     return raw ? JSON.parse(raw) : null
   })
   const [tab, setTab] = useState('dashboard')
+  const [showWhatsappInbox, setShowWhatsappInbox] = useState(false)
   const [message, setMessage] = useState('')
+  const [draft, setDraft] = useState<WhatsappDraft | null>(null)
 
   const logout = () => {
     localStorage.removeItem('session')
@@ -129,7 +173,10 @@ function App() {
             <button
               key={String(id)}
               className={`btn w-full justify-start ${tab === id ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setTab(String(id))}
+              onClick={() => {
+                setTab(String(id))
+                if (String(id) !== 'whatsapp') setShowWhatsappInbox(false)
+              }}
             >
               <Icon className="h-4 w-4" />
               {String(label)}
@@ -140,14 +187,16 @@ function App() {
         <section className="space-y-4">
           {message && <div className="panel border-teal-300 bg-teal-50 p-3 text-sm font-semibold text-teal-900">{message}</div>}
           {tab === 'dashboard' && <Dashboard api={api} />}
-          {tab === 'orders' && <Orders api={api} onMessage={setMessage} />}
+          {tab === 'orders' && <Orders api={api} onMessage={setMessage} onDraft={setDraft} />}
           {tab === 'clients' && <Clients api={api} onMessage={setMessage} />}
           {tab === 'equipment' && <EquipmentPanel api={api} onMessage={setMessage} />}
           {tab === 'inventory' && <Inventory api={api} onMessage={setMessage} />}
           {tab === 'sales' && <Sales api={api} onMessage={setMessage} />}
-          {tab === 'whatsapp' && <Whatsapp onMessage={setMessage} />}
+          {tab === 'whatsapp' && !showWhatsappInbox && <Whatsapp api={api} onMessage={setMessage} onOpenInbox={() => setShowWhatsappInbox(true)} />}
+          {tab === 'whatsapp' && showWhatsappInbox && <WhatsappInbox api={api} onMessage={setMessage} onDraft={setDraft} onBack={() => setShowWhatsappInbox(false)} />}
         </section>
       </main>
+      {draft && <WhatsappPreviewModal api={api} draft={draft} onClose={() => setDraft(null)} onMessage={setMessage} />}
     </div>
   )
 }
@@ -353,7 +402,7 @@ function EquipmentPanel({ api, onMessage }: { api: ReturnType<typeof useApi>; on
   )
 }
 
-function Orders({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage: (m: string) => void }) {
+function Orders({ api, onMessage, onDraft }: { api: ReturnType<typeof useApi>; onMessage: (m: string) => void; onDraft: (draft: WhatsappDraft) => void }) {
   const [orders, setOrders] = useState<Order[]>([])
   const [clients, setClients] = useState<Client[]>([])
   const [equipment, setEquipment] = useState<Equipment[]>([])
@@ -375,8 +424,8 @@ function Orders({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage:
         await api.patch(`/orders/${editingId}`, payload)
         onMessage('Orden actualizada correctamente')
       } else {
-        const { data: created } = await api.post('/orders', payload)
-        prepareOrderWhatsapp(created, onMessage, 'Orden creada. ')
+        await api.post('/orders', payload)
+        onMessage('Orden creada correctamente. El mensaje de recepcion queda disponible para envio manual cuando usted lo decida.')
       }
       setForm(emptyForm)
       setEditingId(null)
@@ -472,14 +521,14 @@ function Orders({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage:
       <div className="panel p-4">
         <h2 className="mb-3 text-lg font-extrabold">Ordenes registradas</h2>
         <div className="space-y-3">
-          {orders.map((order) => <OrderCard key={order.id} order={order} spareParts={spareParts} api={api} onStatus={status} onMessage={onMessage} reload={load} onEdit={edit} />)}
+          {orders.map((order) => <OrderCard key={order.id} order={order} spareParts={spareParts} api={api} onStatus={status} onMessage={onMessage} reload={load} onEdit={edit} onDraft={onDraft} />)}
         </div>
       </div>
     </div>
   )
 }
 
-function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit }: { order: Order; spareParts: SparePart[]; api: ReturnType<typeof useApi>; onStatus: (id: number, s: string) => void; onMessage: (m: string) => void; reload: () => void; onEdit: (order: Order) => void }) {
+function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit, onDraft }: { order: Order; spareParts: SparePart[]; api: ReturnType<typeof useApi>; onStatus: (id: number, s: string) => void; onMessage: (m: string) => void; reload: () => void; onEdit: (order: Order) => void; onDraft: (draft: WhatsappDraft) => void }) {
   const [quote, setQuote] = useState({ description: '', type: 'MANO_OBRA', quantity: 1, unitPrice: 0, sparePartId: '' })
   const [editingQuoteId, setEditingQuoteId] = useState<number | null>(null)
   const [diagnosis, setDiagnosis] = useState({ diagnosis: order.diagnosis ?? '', additionalFaultDetail: order.additionalFaultDetail ?? '' })
@@ -487,6 +536,8 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
   const paid = order.payments?.reduce((sum, item) => sum + Number(item.amount), 0) ?? 0
   const addQuote = async () => {
     try {
+      const wasFirstQuote = !editingQuoteId && (!order.quotes || order.quotes.length === 0)
+      const projectedTotal = wasFirstQuote ? quote.quantity * quote.unitPrice : Number(order.totalCost)
       const payload = clean({ ...quote, sparePartId: quote.sparePartId ? Number(quote.sparePartId) : undefined })
       if (editingQuoteId) {
         await api.patch(`/orders/${order.id}/quotes/${editingQuoteId}`, payload)
@@ -496,6 +547,9 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
       setQuote({ description: '', type: 'MANO_OBRA', quantity: 1, unitPrice: 0, sparePartId: '' })
       setEditingQuoteId(null)
       onMessage(editingQuoteId ? 'Detalle de presupuesto actualizado' : 'Presupuesto agregado')
+      if (wasFirstQuote) {
+        openWhatsappDraft(buildBudgetWhatsappDraft(order, diagnosis.diagnosis || order.diagnosis || '', projectedTotal), onDraft, onMessage)
+      }
       reload()
     } catch (error) {
       onMessage(errorMessage(error))
@@ -574,14 +628,14 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <a className="btn btn-secondary" href={`${API_URL}/public/orders/${order.id}/ticket`} target="_blank"><FileText className="h-4 w-4" />Ticket con QR</a>
-        <button className="btn btn-secondary" onClick={() => prepareOrderWhatsapp(order, onMessage)}><MessageCircle className="h-4 w-4" />WhatsApp rastreo</button>
+        <button className="btn btn-secondary" onClick={() => openWhatsappDraft(buildOrderWhatsappDraft(order), onDraft, onMessage)}><MessageCircle className="h-4 w-4" />WhatsApp rastreo</button>
         <button className="btn btn-secondary" onClick={() => onEdit(order)}><Pencil className="h-4 w-4" />Editar orden</button>
         <button className="btn btn-secondary" onClick={() => onStatus(order.id, 'EN_REVISION')}>Marcar revision</button>
-        <button className="btn btn-secondary" onClick={() => prepareDiagnosisWhatsapp(order, diagnosis.diagnosis || order.diagnosis || '', onMessage)}><MessageCircle className="h-4 w-4" />WhatsApp diagnostico</button>
+        <button className="btn btn-secondary" onClick={() => openWhatsappDraft(buildBudgetWhatsappDraft(order, diagnosis.diagnosis || order.diagnosis || '', Number(order.totalCost)), onDraft, onMessage)}><MessageCircle className="h-4 w-4" />WhatsApp presupuesto</button>
         <button className="btn btn-secondary" onClick={approveQuote}>Aprobar presupuesto</button>
         <button className="btn btn-secondary" onClick={() => {
           onStatus(order.id, 'LISTO_PARA_RECOGER')
-          prepareReadyWhatsapp(order, onMessage)
+          openWhatsappDraft(buildReadyWhatsappDraft(order), onDraft, onMessage)
         }}><MessageCircle className="h-4 w-4" />Listo para recoger</button>
         <button className="btn btn-primary" onClick={() => onStatus(order.id, 'FINALIZADO')}>Finalizar entrega</button>
       </div>
@@ -831,54 +885,342 @@ function Sales({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage: 
   )
 }
 
-function Whatsapp({ onMessage }: { onMessage: (m: string) => void }) {
-  const [form, setForm] = useState({ phone: '', message: '' })
-  const openWhatsappWeb = () => {
-    window.open('https://web.whatsapp.com/', '_blank', 'noopener,noreferrer')
-    onMessage('Se abrio WhatsApp Web oficial en una nueva pestana. Escanee el QR ahi si WhatsApp lo solicita.')
+function Whatsapp({ api, onMessage, onOpenInbox }: { api: ReturnType<typeof useApi>; onMessage: (m: string) => void; onOpenInbox: () => void }) {
+  const [status, setStatus] = useState<WhatsappStatusResponse>({ started: false, initializing: false, ready: false, hasQr: false })
+  const [messages, setMessages] = useState<IncomingWhatsappMessage[]>([])
+
+  const loadStatus = () => {
+    api.get('/whatsapp/status').then((response) => setStatus(response.data)).catch(() => null)
   }
-  const sendWithWhatsapp = () => {
-    const digits = form.phone.replace(/\D/g, '')
-    if (!digits || !form.message.trim()) {
-      onMessage('Ingrese telefono y mensaje antes de enviar.')
-      return
+
+  const loadMessages = () => {
+    api.get('/whatsapp/messages').then((response) => setMessages(response.data)).catch(() => null)
+  }
+
+  useEffect(() => {
+    loadStatus()
+    loadMessages()
+    const timer = window.setInterval(() => {
+      loadStatus()
+      loadMessages()
+    }, status.ready ? 5000 : 2000)
+    return () => window.clearInterval(timer)
+  }, [api, status.ready])
+
+  const startLinkedSession = async () => {
+    try {
+      onMessage('')
+      const { data } = await api.post('/whatsapp/start')
+      if (data.message && data.message !== 'Vinculacion por QR iniciada') onMessage(data.message)
+      loadStatus()
+    } catch (error) {
+      onMessage(errorMessage(error))
     }
-    const phone = digits.length === 8 ? `502${digits}` : digits
-    const url = `https://wa.me/${phone}?text=${encodeURIComponent(form.message)}`
-    window.open(url, '_blank', 'noopener,noreferrer')
-    onMessage('Mensaje preparado en WhatsApp oficial. Revise y confirme el envio manualmente.')
   }
+
+  const stopLinkedSession = async () => {
+    try {
+      const { data } = await api.post('/whatsapp/stop')
+      onMessage(data.message ?? 'Numero desvinculado correctamente.')
+      loadStatus()
+    } catch (error) {
+      onMessage(errorMessage(error))
+    }
+  }
+
+  const displayError =
+    status.lastError &&
+    !status.hasQr &&
+    !status.ready &&
+    !status.lastError.includes('Attempted to use detached Frame')
+      ? status.lastError
+      : ''
+
   return (
-    <div className="panel p-4">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="text-lg font-extrabold">WhatsApp Web</h2>
-          <p className="text-sm text-slate-600">Modo recomendado: usar WhatsApp Web oficial en el navegador para reducir riesgos por automatizacion no oficial.</p>
+    <div className="space-y-4">
+      <div className="panel p-4">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-extrabold">WhatsApp vinculado</h2>
+            <p className="text-sm text-slate-600">Desde aqui solo se controla la sesion institucional y el acceso a la bandeja de conversaciones.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn btn-secondary" onClick={onOpenInbox}>
+              <MessageCircle className="h-4 w-4" />
+              Abrir bandeja
+            </button>
+            <button
+              className="btn btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={stopLinkedSession}
+              disabled={!status.started && !status.ready}
+              title={status.started || status.ready ? 'Desvincular el numero actual y limpiar la sesion guardada.' : 'No hay un numero vinculado para desvincular.'}
+            >
+              <X className="h-4 w-4" />
+              Desvincular
+            </button>
+            <button
+              className="btn btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={startLinkedSession}
+              disabled={status.ready || status.initializing}
+              title={status.ready ? 'Ya existe un numero vinculado. Primero debe desvincularlo para iniciar un QR nuevo.' : status.initializing ? 'La vinculacion ya esta en proceso.' : 'Iniciar vinculacion por QR'}
+            >
+              <ShieldCheck className="h-4 w-4" />
+              {status.ready ? 'Numero vinculado' : status.initializing ? 'Iniciando...' : 'Iniciar QR'}
+            </button>
+          </div>
         </div>
-        <button className="btn btn-primary" onClick={openWhatsappWeb}>
-          <MessageCircle className="h-4 w-4" />
-          Abrir WhatsApp Web
-        </button>
-      </div>
-      <div className="mb-4 grid gap-3 md:grid-cols-3">
-        <Status label="Conexion" value="Manual" />
-        <Status label="Canal" value="Oficial" />
-        <Status label="Riesgo" value="Menor" />
-      </div>
-      <div className="grid gap-2 md:grid-cols-[180px_1fr_auto]">
-        <input className="field" title="Numero del cliente; puede escribir 8 digitos de Guatemala o incluir codigo de pais" placeholder="Telefono del cliente para WhatsApp" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
-        <input className="field" title="Mensaje que se abrira en WhatsApp para revisar y enviar manualmente" placeholder="Mensaje que desea preparar para el cliente" value={form.message} onChange={(e) => setForm({ ...form, message: e.target.value })} />
-        <button className="btn btn-secondary" onClick={sendWithWhatsapp}>
-          <Send className="h-4 w-4" />
-          Preparar envio
-        </button>
+        <div className="mb-4 grid gap-3 md:grid-cols-4">
+          <Status label="Sesion" value={status.ready ? 'Iniciado' : status.initializing ? 'Iniciando' : status.started ? 'Pendiente de escaneo' : 'Sin iniciar'} />
+          <Status label="QR" value={status.ready ? 'Oculto' : status.hasQr ? 'Visible para escaneo' : 'No visible'} />
+          <Status label="Canal" value={status.channelLabel ?? 'Sesion empresa'} />
+          <Status label="Mensajes" value={messages.length ? `${messages.length} registrados` : 'Sin registros'} />
+        </div>
+        {displayError && <p className="mb-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-700">{displayError}</p>}
+        {status.qrCodeDataUrl && (
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+            <p className="mb-2 text-sm font-bold text-slate-700">QR de vinculacion</p>
+            <img src={status.qrCodeDataUrl} alt="QR de WhatsApp" className="h-64 w-64 rounded-md border border-slate-200 bg-white p-2" />
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-function TrackingPage({ orderCode }: { orderCode: string }) {
-  const [token] = useState(new URLSearchParams(location.search).get('token') ?? '')
+function WhatsappInbox({ api, onMessage, onDraft, onBack }: { api: ReturnType<typeof useApi>; onMessage: (m: string) => void; onDraft: (draft: WhatsappDraft) => void; onBack: () => void }) {
+  const [messages, setMessages] = useState<IncomingWhatsappMessage[]>([])
+  const [clients, setClients] = useState<Client[]>([])
+  const [search, setSearch] = useState('')
+  const [selectedPhone, setSelectedPhone] = useState('')
+  const [conversationDraft, setConversationDraft] = useState('')
+  const [filter, setFilter] = useState<'ALL' | 'RESPONDED' | 'ACCEPTED' | 'REJECTED' | 'PENDING'>('ALL')
+  const [channelFilter, setChannelFilter] = useState<'ALL' | string>('ALL')
+
+  useEffect(() => {
+    const load = () => {
+      api.get('/whatsapp/messages').then((response) => setMessages(response.data)).catch(() => null)
+      api.get('/clients').then((response) => setClients(response.data)).catch(() => null)
+    }
+    load()
+    const timer = window.setInterval(load, 10000)
+    return () => window.clearInterval(timer)
+  }, [api])
+
+  const conversations = useMemo<WhatsappConversation[]>(() => {
+    const grouped = new Map<string, IncomingWhatsappMessage[]>()
+    for (const item of messages) {
+      const digits = normalizePhoneForMatching(item.destinationPhone)
+      if (!digits) continue
+      const current = grouped.get(digits) ?? []
+      current.push(item)
+      grouped.set(digits, current)
+    }
+
+    return [...grouped.entries()]
+      .map(([phoneDigits, items]) => {
+        const sortedItems = [...items].sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime())
+        const latest = sortedItems[sortedItems.length - 1]
+        const order = [...sortedItems].reverse().find((item) => item.order)?.order ?? undefined
+        const client = order?.client ?? clients.find((row) => normalizePhoneForMatching(row.phone) === phoneDigits)
+        const displayName = client ? `${client.firstName} ${client.lastName}` : latest.apiResponse?.pushName?.trim() || formatPhoneForDisplay(latest.destinationPhone)
+        return {
+          phone: latest.destinationPhone,
+          phoneDigits,
+          displayName,
+          channelKey: latest.apiResponse?.channelKey ?? 'WHATSAPP_GENERAL',
+          channelLabel: latest.apiResponse?.channelLabel ?? 'Canal general',
+          client,
+          order,
+          items: sortedItems,
+          lastMessageAt: latest.sentAt,
+          unreadCount: sortedItems.filter((item) => item.template === 'incoming_message').length,
+        }
+      })
+      .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
+  }, [clients, messages])
+
+  const channelOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const conversation of conversations) {
+      map.set(conversation.channelKey, conversation.channelLabel)
+    }
+    return [...map.entries()].map(([key, label]) => ({ key, label }))
+  }, [conversations])
+
+  const dashboard = useMemo(() => {
+    const orders = new Map<number, WhatsappMessageOrderSummary>()
+    for (const conversation of conversations) {
+      if (conversation.order) orders.set(conversation.order.id, conversation.order)
+    }
+    const rows = [...orders.values()]
+    return {
+      totalConversations: conversations.length,
+      responded: rows.filter((order) => order.status === 'EN_REPARACION' || order.status === 'PRESUPUESTO_RECHAZADO').length,
+      accepted: rows.filter((order) => order.status === 'EN_REPARACION').length,
+      rejected: rows.filter((order) => order.status === 'PRESUPUESTO_RECHAZADO').length,
+      pending: rows.filter((order) => ['PRESUPUESTO_ENVIADO', 'EN_REVISION', 'ESPERANDO_PRESUPUESTO'].includes(order.status)).length,
+    }
+  }, [conversations])
+
+  const filteredConversations = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    return conversations.filter((conversation) => {
+      if (channelFilter !== 'ALL' && conversation.channelKey !== channelFilter) return false
+      const matchesTerm = !term || conversation.displayName.toLowerCase().includes(term) || conversation.phoneDigits.includes(term.replace(/\D/g, '')) || (conversation.order?.orderCode.toLowerCase().includes(term) ?? false)
+      if (!matchesTerm) return false
+      if (filter === 'ALL') return true
+      if (!conversation.order) return false
+      if (filter === 'RESPONDED') return conversation.order.status === 'EN_REPARACION' || conversation.order.status === 'PRESUPUESTO_RECHAZADO'
+      if (filter === 'ACCEPTED') return conversation.order.status === 'EN_REPARACION'
+      if (filter === 'REJECTED') return conversation.order.status === 'PRESUPUESTO_RECHAZADO'
+      return ['PRESUPUESTO_ENVIADO', 'EN_REVISION', 'ESPERANDO_PRESUPUESTO'].includes(conversation.order.status)
+    })
+  }, [channelFilter, conversations, filter, search])
+
+  useEffect(() => {
+    if (!filteredConversations.length) {
+      setSelectedPhone('')
+      return
+    }
+    if (!selectedPhone || !filteredConversations.some((conversation) => conversation.phoneDigits === selectedPhone)) {
+      setSelectedPhone(filteredConversations[0].phoneDigits)
+    }
+  }, [filteredConversations, selectedPhone])
+
+  const selectedConversation = filteredConversations.find((conversation) => conversation.phoneDigits === selectedPhone)
+
+  const openConversationDraft = () => {
+    if (!selectedConversation) return onMessage('Seleccione una conversacion para preparar el mensaje.')
+    const draft = buildManualWhatsappDraft(selectedConversation.phone, conversationDraft)
+    if (draft.notice) return onMessage(draft.notice)
+    if (draft.draft) onDraft({ ...draft.draft, orderId: selectedConversation.order?.id, title: `Conversacion ${selectedConversation.displayName}` })
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="panel p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-extrabold">Bandeja de conversaciones</h2>
+            <p className="text-sm text-slate-600">Panel auxiliar para revisar respuestas de clientes, filtrar conversaciones y enviar mensajes desde un solo lugar.</p>
+          </div>
+          <button className="btn btn-secondary" onClick={onBack}>
+            <X className="h-4 w-4" />
+            Regresar
+          </button>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-5">
+          <Status label="Conversaciones" value={String(dashboard.totalConversations)} />
+          <Status label="Respondieron" value={String(dashboard.responded)} />
+          <Status label="Aceptaron" value={String(dashboard.accepted)} />
+          <Status label="Rechazaron" value={String(dashboard.rejected)} />
+          <Status label="Pendientes" value={String(dashboard.pending)} />
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[320px_1fr]">
+        <div className="panel p-4">
+          <h3 className="text-lg font-extrabold">Conversaciones</h3>
+          <p className="mb-3 text-sm text-slate-600">Busque por cliente, telefono u orden.</p>
+          <input className="field mb-3" placeholder="Buscar por cliente, telefono u orden" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <select className="field mb-3" value={channelFilter} onChange={(e) => setChannelFilter(e.target.value)}>
+            <option value="ALL">Todos los canales</option>
+            {channelOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+          </select>
+          <div className="mb-3 flex flex-wrap gap-2">
+            {[
+              ['ALL', 'Todos'],
+              ['RESPONDED', 'Respondidos'],
+              ['ACCEPTED', 'Aceptados'],
+              ['REJECTED', 'Rechazados'],
+              ['PENDING', 'Pendientes'],
+            ].map(([value, label]) => (
+              <button key={value} className={`btn ${filter === value ? 'btn-primary' : 'btn-secondary'} px-3 py-2 text-xs`} onClick={() => setFilter(value as typeof filter)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="space-y-2">
+            {filteredConversations.length ? filteredConversations.map((conversation) => {
+              const latest = conversation.items[conversation.items.length - 1]
+              return (
+                <button key={conversation.phoneDigits} className={`w-full rounded-md border p-3 text-left ${conversation.phoneDigits === selectedPhone ? 'border-teal-500 bg-teal-50' : 'border-slate-200 bg-white'}`} onClick={() => setSelectedPhone(conversation.phoneDigits)}>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-bold text-slate-900">{conversation.displayName}</p>
+                    <span className="text-xs font-semibold text-slate-500">{new Date(conversation.lastMessageAt).toLocaleDateString()}</span>
+                  </div>
+                  <p className="text-xs text-slate-500">{formatPhoneForDisplay(conversation.phone)}</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-600">{conversation.channelLabel}</p>
+                  {conversation.order && <p className="mt-1 text-xs font-semibold text-teal-700">{conversation.order.orderCode} · {conversation.order.status}</p>}
+                  <p className="mt-2 line-clamp-2 text-sm text-slate-600">{latest.message || 'Sin texto'}</p>
+                </button>
+              )
+            }) : <p className="text-sm text-slate-600">No hay conversaciones para ese filtro.</p>}
+          </div>
+        </div>
+
+        <div className="panel p-4">
+          {selectedConversation ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 pb-3">
+                <div>
+                  <h3 className="text-lg font-extrabold">{selectedConversation.displayName}</h3>
+                  <p className="text-sm text-slate-600">{formatPhoneForDisplay(selectedConversation.phone)}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-600">Canal: {selectedConversation.channelLabel}</p>
+                  {selectedConversation.order && <p className="mt-1 text-sm font-semibold text-teal-700">Orden vinculada: {selectedConversation.order.orderCode} · {selectedConversation.order.status}</p>}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedConversation.order && (
+                    <button className="btn btn-secondary" onClick={() => openWhatsappDraft(buildOrderWhatsappDraft({ id: selectedConversation.order!.id, orderCode: selectedConversation.order!.orderCode, trackingToken: selectedConversation.order!.trackingToken, client: selectedConversation.order!.client }), onDraft, onMessage)}>
+                      <FileText className="h-4 w-4" />
+                      Reenviar rastreo
+                    </button>
+                  )}
+                  <button className="btn btn-secondary" onClick={() => setConversationDraft(`Hola ${selectedConversation.client?.firstName || selectedConversation.displayName}, le saluda el taller. ¿En que podemos apoyarle?`)}>
+                    <Plus className="h-4 w-4" />
+                    Plantilla base
+                  </button>
+                </div>
+              </div>
+
+              <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
+                {selectedConversation.items.map((item) => {
+                  const inbound = item.template === 'incoming_message'
+                  return (
+                    <div key={item.id} className={`flex ${inbound ? 'justify-start' : 'justify-end'}`}>
+                      <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm ${inbound ? 'bg-slate-100 text-slate-800' : 'bg-teal-700 text-white'}`}>
+                        <p className="whitespace-pre-wrap">{item.message || 'Sin texto'}</p>
+                        <p className={`mt-2 text-[11px] ${inbound ? 'text-slate-500' : 'text-teal-100'}`}>{new Date(item.sentAt).toLocaleString()} · {describeWhatsappEvent(item)}</p>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <p className="mb-2 text-sm font-bold text-slate-700">Responder desde este panel</p>
+                <textarea className="field min-h-[120px]" placeholder="Escriba aqui el mensaje para el cliente" value={conversationDraft} onChange={(e) => setConversationDraft(e.target.value)} />
+                <div className="mt-3 flex flex-wrap justify-between gap-2">
+                  <p className="text-xs text-slate-500">El envio sigue pasando por la vista previa para mantener control interno.</p>
+                  <button className="btn btn-primary" onClick={openConversationDraft}>
+                    <Send className="h-4 w-4" />
+                    Preparar envio
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-h-[320px] items-center justify-center text-center text-sm text-slate-600">
+              Seleccione una conversacion del panel izquierdo para revisar el hilo.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TrackingPage({ orderCode, token }: { orderCode: string; token: string }) {
   const [data, setData] = useState<any>()
   const [error, setError] = useState('')
   const load = () => axios.get(`${API_URL}/public/tracking/${orderCode}?token=${token}`).then((r) => setData(r.data)).catch(() => setError('No se encontro la orden o el token no es valido.'))
@@ -1001,6 +1343,61 @@ function Status({ label, value }: { label: string; value: string }) {
   return <div className="rounded-md border border-slate-200 p-3"><p className="text-sm font-bold text-slate-500">{label}</p><p className="text-xl font-extrabold">{value}</p></div>
 }
 
+function WhatsappPreviewModal({ api, draft, onClose, onMessage }: { api: ReturnType<typeof useApi>; draft: WhatsappDraft; onClose: () => void; onMessage: (m: string) => void }) {
+  const [sending, setSending] = useState(false)
+
+  const openInOfficialWeb = () => {
+    const url = `https://wa.me/${draft.phone}?text=${encodeURIComponent(draft.message)}`
+    window.open(url, '_blank', 'noopener,noreferrer')
+    onMessage('Vista previa aprobada. El mensaje se abrio en WhatsApp Web para envio manual.')
+    onClose()
+  }
+
+  const sendLinked = async () => {
+    try {
+      setSending(true)
+      const { data } = await api.post('/whatsapp/send', { orderId: draft.orderId, phone: draft.phone, message: draft.message })
+      onMessage(data.deliveryStatus === 'SENT' ? 'Mensaje enviado desde la sesion vinculada de WhatsApp.' : 'La sesion vinculada no estaba lista. El intento quedo auditado para seguimiento interno.')
+      onClose()
+    } catch (error) {
+      onMessage(errorMessage(error))
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+      <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-5 shadow-xl">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-bold uppercase text-teal-700">Vista previa obligatoria</p>
+            <h2 className="text-xl font-extrabold text-slate-950">{draft.title}</h2>
+          </div>
+          <button className="btn btn-secondary" onClick={onClose}>
+            <X className="h-4 w-4" />
+            Cerrar
+          </button>
+        </div>
+        <div className="mb-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
+          <p><span className="font-bold">Destino:</span> {draft.phone}</p>
+        </div>
+        <textarea className="field min-h-56 w-full" value={draft.message} readOnly />
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button className="btn btn-primary" onClick={sendLinked} disabled={sending}>
+            <Send className="h-4 w-4" />
+            {sending ? 'Enviando...' : 'Enviar por sesion vinculada'}
+          </button>
+          <button className="btn btn-secondary" onClick={openInOfficialWeb}>
+            <MessageCircle className="h-4 w-4" />
+            Abrir en WhatsApp Web
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function clean<T extends Record<string, unknown>>(obj: T) {
   return Object.fromEntries(Object.entries(obj).filter(([, value]) => value !== '' && value !== undefined)) as Partial<T>
 }
@@ -1027,47 +1424,103 @@ function errorMessage(error: unknown) {
   return 'No se pudo completar la accion solicitada'
 }
 
-function prepareOrderWhatsapp(order: Pick<Order, 'orderCode' | 'trackingToken' | 'client'>, onMessage: (m: string) => void, prefix = '') {
-  const digits = order.client.phone?.replace(/\D/g, '') ?? ''
-  const trackingUrl = `${location.origin}/rastreo/${order.orderCode}?token=${order.trackingToken}`
-  if (!digits || order.client.phone.toLowerCase().includes('sin telefono')) {
-    onMessage(`${prefix}El cliente no dejo telefono disponible. Entregue el ticket impreso con el codigo QR para que pueda consultar su orden.`)
-    return
-  }
-  const phone = digits.length === 8 ? `502${digits}` : digits
-  const text = `Estimado/a ${order.client.firstName}, su equipo fue recibido en nuestro taller con el numero de orden ${order.orderCode}.\n\nPuede consultar el estado de su reparacion, ver el presupuesto y dar su autorizacion en el siguiente enlace:\n${trackingUrl}\n\nSi prefiere responder por este medio, puede escribir:\n- SI ACEPTO ${order.orderCode} para autorizar la reparacion.\n- NO ACEPTO ${order.orderCode} si desea retirar su equipo sin reparar.\n\nGracias por preferirnos.`
-  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer')
-  onMessage(`${prefix}Mensaje de seguimiento preparado en WhatsApp. Por favor revise el texto y confirme el envio manualmente.`)
+function openWhatsappDraft(result: { draft?: WhatsappDraft; notice?: string }, onDraft: (draft: WhatsappDraft) => void, onMessage: (m: string) => void) {
+  if (result.notice) onMessage(result.notice)
+  if (result.draft) onDraft(result.draft)
 }
 
-function prepareDiagnosisWhatsapp(order: Pick<Order, 'orderCode' | 'trackingToken' | 'client'>, diagnosis: string, onMessage: (m: string) => void) {
-  const digits = order.client.phone?.replace(/\D/g, '') ?? ''
-  const trackingUrl = `${location.origin}/rastreo/${order.orderCode}?token=${order.trackingToken}`
-  if (!digits || order.client.phone.toLowerCase().includes('sin telefono')) {
-    onMessage('El cliente no tiene telefono registrado. El diagnostico queda disponible en el codigo QR del ticket.')
-    return
+function buildManualWhatsappDraft(phone: string, message: string) {
+  const normalizedPhone = normalizeWhatsappPhone(phone)
+  if (!normalizedPhone || !message.trim()) {
+    return { notice: 'Ingrese telefono y mensaje antes de preparar la vista previa.' }
   }
-  if (!diagnosis.trim()) {
-    onMessage('Debe registrar el diagnostico tecnico antes de notificar al cliente.')
-    return
-  }
-  const phone = digits.length === 8 ? `502${digits}` : digits
-  const text = `Estimado/a ${order.client.firstName}, hemos concluido la revision de su equipo (orden ${order.orderCode}).\n\nDiagnostico tecnico:\n${diagnosis}\n\nPuede ver el detalle completo, el presupuesto y dar su autorizacion aqui:\n${trackingUrl}\n\nQuedamos a sus ordenes.`
-  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer')
-  onMessage('Mensaje de diagnostico preparado en WhatsApp. Por favor revise el texto y confirme el envio manualmente.')
+  return { draft: { phone: normalizedPhone, message: message.trim(), title: 'Mensaje manual de WhatsApp' } }
 }
 
-function prepareReadyWhatsapp(order: Pick<Order, 'orderCode' | 'trackingToken' | 'client'>, onMessage: (m: string) => void) {
+function buildOrderWhatsappDraft(order: Pick<Order, 'id' | 'orderCode' | 'trackingToken' | 'client'>) {
   const digits = order.client.phone?.replace(/\D/g, '') ?? ''
-  const trackingUrl = `${location.origin}/rastreo/${order.orderCode}?token=${order.trackingToken}`
+  const trackingUrl = buildTrackingUrl(order.orderCode, order.trackingToken)
   if (!digits || order.client.phone.toLowerCase().includes('sin telefono')) {
-    onMessage('El cliente no tiene telefono registrado. Notifiquele personalmente o por otro medio cuando venga a recoger.')
-    return
+    return { notice: 'El cliente no dejo telefono disponible. Entregue el ticket impreso con el codigo QR para que pueda consultar su orden.' }
   }
-  const phone = digits.length === 8 ? `502${digits}` : digits
-  const text = `Estimado/a ${order.client.firstName}, nos complace informarle que su equipo (orden ${order.orderCode}) ya se encuentra listo para ser retirado en nuestro taller.\n\nPuede verificar el estado de su orden aqui:\n${trackingUrl}\n\nLe esperamos en nuestro horario de atencion. Gracias por su preferencia.`
-  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(text)}`, '_blank', 'noopener,noreferrer')
-  onMessage('Mensaje de equipo listo preparado en WhatsApp. Por favor revise el texto y confirme el envio manualmente.')
+  const phone = normalizeWhatsappPhone(order.client.phone)
+  const text = `🔧📦 Estimado/a ${order.client.firstName}:\n\nSu equipo ha sido recibido exitosamente en nuestro taller con el numero de orden:\n🧾 ${order.orderCode}\n\n🌐 Puede consultar el estado de su reparacion y revisar futuras actualizaciones en el siguiente enlace:\n🔗 ${trackingUrl}\n\n🙏 Gracias por confiar en nosotros.\n🛠️ Estamos para servirle y atentos a cualquier consulta.`
+  return { draft: { orderId: order.id, phone, message: text, title: `Seguimiento ${order.orderCode}` } }
+}
+
+function buildBudgetWhatsappDraft(order: Pick<Order, 'id' | 'orderCode' | 'trackingToken' | 'client'>, diagnosis: string, totalCost?: number) {
+  const digits = order.client.phone?.replace(/\D/g, '') ?? ''
+  const trackingUrl = buildTrackingUrl(order.orderCode, order.trackingToken)
+  if (!digits || order.client.phone.toLowerCase().includes('sin telefono')) {
+    return { notice: 'El cliente no tiene telefono registrado. El diagnostico queda disponible en el codigo QR del ticket.' }
+  }
+  const phone = normalizeWhatsappPhone(order.client.phone)
+  const diagnosisBlock = diagnosis.trim() ? `🛠️ Diagnostico tecnico:\n${diagnosis.trim()}\n\n` : ''
+  const totalBlock = totalCost && totalCost > 0 ? `💰 Presupuesto estimado: Q ${totalCost.toFixed(2)}\n\n` : ''
+  const text = `📋🔧 Estimado/a ${order.client.firstName}:\n\nYa tenemos listo el presupuesto de su equipo correspondiente a la orden:\n🧾 ${order.orderCode}\n\n${diagnosisBlock}${totalBlock}🌐 Puede revisar el detalle completo y autorizar el servicio en el siguiente enlace:\n🔗 ${trackingUrl}\n\n💬 Puede responder directamente por este medio con alguna de estas opciones:\n\n✅ SI ACEPTO ${order.orderCode}\n→ Para autorizar la reparacion.\n\n❌ NO ACEPTO ${order.orderCode}\n→ Si desea retirar su equipo sin reparar.\n\n⏳ Si necesita apoyo adicional, con gusto le orientamos.\n🙏 Gracias por confiar en nosotros.`
+  return { draft: { orderId: order.id, phone, message: text, title: `Presupuesto ${order.orderCode}` } }
+}
+
+function buildReadyWhatsappDraft(order: Pick<Order, 'id' | 'orderCode' | 'trackingToken' | 'client'>) {
+  const digits = order.client.phone?.replace(/\D/g, '') ?? ''
+  const trackingUrl = buildTrackingUrl(order.orderCode, order.trackingToken)
+  if (!digits || order.client.phone.toLowerCase().includes('sin telefono')) {
+    return { notice: 'El cliente no tiene telefono registrado. Notifiquele personalmente o por otro medio cuando venga a recoger.' }
+  }
+  const phone = normalizeWhatsappPhone(order.client.phone)
+  const text = `✅📦 Estimado/a ${order.client.firstName}:\n\nNos complace informarle que su equipo correspondiente a la orden:\n🧾 ${order.orderCode}\n\nya se encuentra listo para ser retirado en nuestro taller.\n\n🌐 Puede verificar el estado de su orden aqui:\n🔗 ${trackingUrl}\n\n🙏 Gracias por su preferencia.\n🛠️ Le esperamos en nuestro horario de atencion.`
+  return { draft: { orderId: order.id, phone, message: text, title: `Equipo listo ${order.orderCode}` } }
+}
+
+function normalizeWhatsappPhone(phone: string) {
+  const digits = phone.replace(/\D/g, '')
+  if (!digits) return ''
+  return digits.length === 8 ? `502${digits}` : digits
+}
+
+function resolveTrackingRoute() {
+  const pathMatch = location.pathname.match(/^\/rastreo\/([^/]+)/)
+  if (pathMatch) {
+    return {
+      orderCode: decodeURIComponent(pathMatch[1]),
+      token: new URLSearchParams(location.search).get('token') ?? '',
+    }
+  }
+
+  const hash = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash
+  const [hashPath, hashQuery = ''] = hash.split('?')
+  const hashMatch = hashPath.match(/^\/rastreo\/([^/]+)/)
+  if (!hashMatch) return null
+
+  return {
+    orderCode: decodeURIComponent(hashMatch[1]),
+    token: new URLSearchParams(hashQuery).get('token') ?? '',
+  }
+}
+
+function buildTrackingUrl(orderCode: string, trackingToken: string) {
+  const baseUrl = PUBLIC_FRONTEND_URL.endsWith('/') ? PUBLIC_FRONTEND_URL.slice(0, -1) : PUBLIC_FRONTEND_URL
+  return `${baseUrl}/#/rastreo/${encodeURIComponent(orderCode)}?token=${encodeURIComponent(trackingToken)}`
+}
+
+function normalizePhoneForMatching(phone?: string) {
+  if (!phone) return ''
+  const digits = phone.replace(/\D/g, '')
+  if (!digits) return ''
+  return digits.length > 8 ? digits.slice(-8) : digits
+}
+
+function formatPhoneForDisplay(phone?: string) {
+  if (!phone) return 'Sin telefono'
+  return phone.startsWith('+') ? phone : `+${phone.replace(/[^\d]/g, '') || phone}`
+}
+
+function describeWhatsappEvent(item: IncomingWhatsappMessage) {
+  if (item.template === 'incoming_message') return 'Mensaje recibido'
+  if (item.deliveryStatus === 'SENT') return item.order?.orderCode ? `Enviado · ${item.order.orderCode}` : 'Enviado'
+  if (item.deliveryStatus === 'PENDING') return 'Pendiente por sesion'
+  if (item.deliveryStatus === 'FAILED') return 'Envio fallido'
+  return item.deliveryStatus
 }
 
 export default App

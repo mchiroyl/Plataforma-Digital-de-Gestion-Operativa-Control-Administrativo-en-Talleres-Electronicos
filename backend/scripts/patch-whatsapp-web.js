@@ -11,6 +11,29 @@ if (!fs.existsSync(clientPath)) {
 const source = fs.readFileSync(clientPath, 'utf8');
 let output = source;
 
+const retryHelper = `const isTransientInjectError = (err) => {
+            const message = String(err && err.message ? err.message : err);
+            return message.includes('Execution context was destroyed')
+                || message.includes('most likely because of a navigation')
+                || message.includes('Cannot find context with specified id');
+        };
+        const injectWithRetry = async (attempts = 4, delayMs = 1500) => {
+            let lastError;
+            for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                try {
+                    await this.inject();
+                    return;
+                } catch (err) {
+                    if (!isTransientInjectError(err) || attempt === attempts) {
+                        throw err;
+                    }
+                    lastError = err;
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+                }
+            }
+            throw lastError;
+        };`;
+
 const originalCache = `if(res.ok() && res.url() === WhatsWebURL) {
                     const indexHtml = await res.text();
                     this.currentIndexHtml = indexHtml;
@@ -35,7 +58,7 @@ if (!output.includes('Ignore responses without a readable body') && !output.incl
 const originalInitialInject = `        await this.inject();
 
         this.pupPage.on('framenavigated', async (frame) => {`;
-const patchedInitialInject = `        try {
+const oldPatchedInitialInject = `        try {
             await this.inject();
         } catch (err) {
             if (!String(err && err.message ? err.message : err).includes('Execution context was destroyed')) throw err;
@@ -44,9 +67,16 @@ const patchedInitialInject = `        try {
         }
 
         this.pupPage.on('framenavigated', async (frame) => {`;
+const patchedInitialInject = `        ${retryHelper}
 
-if (!output.includes('Execution context was destroyed')) {
-  if (output.includes(originalInitialInject)) {
+        await injectWithRetry();
+
+        this.pupPage.on('framenavigated', async (frame) => {`;
+
+if (!output.includes('const injectWithRetry = async')) {
+  if (output.includes(oldPatchedInitialInject)) {
+    output = output.replace(oldPatchedInitialInject, patchedInitialInject);
+  } else if (output.includes(originalInitialInject)) {
     output = output.replace(originalInitialInject, patchedInitialInject);
   } else {
     console.warn('[patch-whatsapp-web] No se encontro el bloque de inyeccion inicial esperado.');
@@ -56,7 +86,7 @@ if (!output.includes('Execution context was destroyed')) {
 const originalFrameInject = `            await this.inject();
         });
     }`;
-const patchedFrameInject = `            try {
+const oldPatchedFrameInject = `            try {
                 await this.inject();
             } catch (err) {
                 if (!String(err && err.message ? err.message : err).includes('Execution context was destroyed')) throw err;
@@ -65,9 +95,18 @@ const patchedFrameInject = `            try {
             }
         });
     }`;
+const patchedFrameInject = `            try {
+                await injectWithRetry();
+            } catch (err) {
+                if (!isTransientInjectError(err)) throw err;
+            }
+        });
+    }`;
 
-if (!output.includes('await new Promise(resolve => setTimeout(resolve, 1000));')) {
-  if (output.includes(originalFrameInject)) {
+if (!output.includes('await injectWithRetry();')) {
+  if (output.includes(oldPatchedFrameInject)) {
+    output = output.replace(oldPatchedFrameInject, patchedFrameInject);
+  } else if (output.includes(originalFrameInject)) {
     output = output.replace(originalFrameInject, patchedFrameInject);
   } else {
     console.warn('[patch-whatsapp-web] No se encontro el bloque de framenavigated esperado.');
