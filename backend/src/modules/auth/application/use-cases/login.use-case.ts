@@ -13,7 +13,7 @@ export class LoginUseCase {
   ) {}
 
   async execute(username: string, password: string) {
-    const user = await this.userCredentialsRepository.findByUsername(username);
+    const user = await this.userCredentialsRepository.findByUsername(username.trim().toLowerCase());
     if (!user || !user.isActive) throw new UnauthorizedException('Credenciales invalidas');
 
     const valid = await bcrypt.compare(password, user.passwordHash);

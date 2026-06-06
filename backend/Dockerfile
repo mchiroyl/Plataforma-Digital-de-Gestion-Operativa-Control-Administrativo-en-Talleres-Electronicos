@@ -3,7 +3,8 @@ FROM node:24-bookworm-slim AS build
 WORKDIR /app
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package*.json ./
-RUN npm ci
+COPY scripts ./scripts
+RUN npm ci --include=dev
 COPY prisma ./prisma
 RUN npx prisma generate
 COPY . .
@@ -19,7 +20,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends chromium ca-certificates fonts-liberation \
   && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
-RUN npm ci
+COPY scripts ./scripts
+RUN npm ci --include=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma

@@ -18,6 +18,7 @@ enum OrderStatus {
   EN_REVISION
   ESPERANDO_PRESUPUESTO
   PRESUPUESTO_ENVIADO
+  PRESUPUESTO_ACEPTADO
   EN_REPARACION
   LISTO_PARA_RECOGER
   FINALIZADO
@@ -59,6 +60,19 @@ enum InventoryMovementType {
   AJUSTE_NEGATIVO
 }
 
+enum EvidenceType {
+  RECEPCION
+  DIAGNOSTICO
+  REPARACION
+  ENTREGA
+}
+
+enum ServiceLine {
+  TELEFONIA
+  EQUIPOS_GENERALES
+  EQUIPOS_DE_COMPUTO
+}
+
 enum AuditAction {
   INSERT
   UPDATE
@@ -93,6 +107,8 @@ model User {
   whatsappMessages WhatsappNotification[]
   updatedSettings  ShopSettings[]
   auditLogs        AuditLog[]
+  expenses         Expense[]
+  uploadedEvidence RepairOrderEvidence[]
 }
 
 model Client {
@@ -113,10 +129,13 @@ model Client {
 }
 
 model EquipmentType {
-  id        Int      @id @default(autoincrement())
-  name      String   @unique
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
+  id                      Int         @id @default(autoincrement())
+  name                    String      @unique
+  serviceLine             ServiceLine @default(EQUIPOS_GENERALES)
+  requiresCredential      Boolean     @default(false)
+  allowsUnlockCase        Boolean     @default(false)
+  isActive                Boolean     @default(true)
+  createdAt               DateTime    @default(now())
 
   equipment  Equipment[]
   faultTypes FaultType[]
@@ -222,6 +241,26 @@ model RepairOrder {
   quotes       QuoteDetail[]
   payments     Payment[]
   whatsappLogs WhatsappNotification[]
+  evidences    RepairOrderEvidence[]
+}
+
+model RepairOrderEvidence {
+  id           Int          @id @default(autoincrement())
+  orderId      Int
+  evidenceType EvidenceType
+  description  String?
+  fileName     String
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById Int
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+
+  order      RepairOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  uploadedBy User        @relation(fields: [uploadedById], references: [id])
+
+  @@index([orderId, isActive])
 }
 
 model OrderFaultType {
@@ -353,6 +392,26 @@ model Payment {
   registeredBy User        @relation(fields: [registeredById], references: [id])
 }
 
+model Expense {
+  id             Int           @id @default(autoincrement())
+  spentAt        DateTime      @default(now())
+  category       String
+  description    String
+  amount         Decimal       @db.Decimal(10, 2)
+  paymentMethod  PaymentMethod
+  responsible    String
+  notes          String?
+  registeredById Int
+  isActive       Boolean       @default(true)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  registeredBy User @relation(fields: [registeredById], references: [id])
+
+  @@index([spentAt])
+  @@index([category])
+}
+
 model WhatsappNotification {
   id               Int      @id @default(autoincrement())
   orderId          Int?
@@ -395,6 +454,10 @@ model ShopSettings {
   shopName            String
   slogan              String?
   logoUrl             String?
+  logoData            Bytes?
+  logoMimeType        String?
+  logoFileName        String?
+  logoUpdatedAt       DateTime?
   phone               String
   whatsapp            String
   address             String?
@@ -403,6 +466,7 @@ model ShopSettings {
   termsText           String?
   privacyText         String?
   currency            String   @default("GTQ")
+  ticketFormat        String   @default("LETTER")
   updatedById         Int?
   updatedAt           DateTime @updatedAt
 

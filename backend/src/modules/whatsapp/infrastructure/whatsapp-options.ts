@@ -1,6 +1,32 @@
-export const WHATSAPP_CLIENT_ID = process.env.WHATSAPP_CLIENT_ID?.trim() || 'plataforma-talleres-electronicos';
-export const WHATSAPP_CHANNEL_KEY = process.env.WHATSAPP_CHANNEL_KEY?.trim() || 'WHATSAPP_ORDENES';
-export const WHATSAPP_CHANNEL_LABEL = process.env.WHATSAPP_CHANNEL_LABEL?.trim() || 'Canal ordenes';
+export type WhatsappChannelKey = 'ORDERS' | 'SALES_SUPPORT';
+
+export type WhatsappChannelConfig = {
+  key: WhatsappChannelKey;
+  label: string;
+  clientId: string;
+  quoteAutomation: boolean;
+};
+
+export const DEFAULT_WHATSAPP_CHANNEL_KEY: WhatsappChannelKey = 'ORDERS';
+
+export const WHATSAPP_CHANNELS: WhatsappChannelConfig[] = [
+  {
+    key: 'ORDERS',
+    label: process.env.WHATSAPP_ORDERS_CHANNEL_LABEL?.trim() || 'Canal ordenes',
+    clientId: process.env.WHATSAPP_ORDERS_CLIENT_ID?.trim() || 'orders',
+    quoteAutomation: true,
+  },
+  {
+    key: 'SALES_SUPPORT',
+    label: process.env.WHATSAPP_SALES_CHANNEL_LABEL?.trim() || 'Ventas y atencion',
+    clientId: process.env.WHATSAPP_SALES_CLIENT_ID?.trim() || 'sales-support',
+    quoteAutomation: false,
+  },
+];
+
+export const WHATSAPP_CHANNEL_KEY = DEFAULT_WHATSAPP_CHANNEL_KEY;
+export const WHATSAPP_CHANNEL_LABEL = WHATSAPP_CHANNELS[0].label;
+export const WHATSAPP_CLIENT_ID = WHATSAPP_CHANNELS[0].clientId;
 const configuredWhatsappWebVersion = process.env.WHATSAPP_WEB_VERSION?.trim();
 export const WHATSAPP_WEB_VERSION = configuredWhatsappWebVersion ? configuredWhatsappWebVersion : undefined;
 export const WHATSAPP_PROTOCOL_TIMEOUT_MS = Number(process.env.WHATSAPP_PROTOCOL_TIMEOUT_MS ?? 300000);

@@ -50,20 +50,89 @@ async function main() {
     },
   });
 
+  const baseClients = [
+    { firstName: 'Eddy Gerardo', lastName: 'Cuyuch', phone: '+502 4928 0961' },
+    { firstName: 'Josue David', lastName: 'Sanchez', phone: '+502 4221 4924' },
+    { firstName: 'Obady', lastName: 'Perez', phone: '+502 3249 9143' },
+    { firstName: 'Zaqueo', lastName: 'Chivalan', phone: '+502 4487 9588' },
+  ];
+
+  for (const client of baseClients) {
+    const existing = await prisma.client.findFirst({ where: { phone: client.phone } });
+    if (existing) {
+      await prisma.client.update({
+        where: { id: existing.id },
+        data: { ...client, isActive: true },
+      });
+    } else {
+      await prisma.client.create({ data: client });
+    }
+  }
+
   const celular = await prisma.equipmentType.upsert({
     where: { name: 'Celular' },
-    update: {},
-    create: { name: 'Celular' },
+    update: { serviceLine: 'TELEFONIA', requiresCredential: true, allowsUnlockCase: true },
+    create: { name: 'Celular', serviceLine: 'TELEFONIA', requiresCredential: true, allowsUnlockCase: true },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Telefono Android' },
+    update: { serviceLine: 'TELEFONIA', requiresCredential: true, allowsUnlockCase: true },
+    create: { name: 'Telefono Android', serviceLine: 'TELEFONIA', requiresCredential: true, allowsUnlockCase: true },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'iPhone' },
+    update: { serviceLine: 'TELEFONIA', requiresCredential: true, allowsUnlockCase: true },
+    create: { name: 'iPhone', serviceLine: 'TELEFONIA', requiresCredential: true, allowsUnlockCase: true },
   });
   const laptop = await prisma.equipmentType.upsert({
     where: { name: 'Laptop' },
-    update: {},
-    create: { name: 'Laptop' },
+    update: { serviceLine: 'EQUIPOS_DE_COMPUTO', requiresCredential: true, allowsUnlockCase: false },
+    create: { name: 'Laptop', serviceLine: 'EQUIPOS_DE_COMPUTO', requiresCredential: true, allowsUnlockCase: false },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Computadora de escritorio' },
+    update: { serviceLine: 'EQUIPOS_DE_COMPUTO', requiresCredential: true, allowsUnlockCase: false },
+    create: { name: 'Computadora de escritorio', serviceLine: 'EQUIPOS_DE_COMPUTO', requiresCredential: true, allowsUnlockCase: false },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Impresora' },
+    update: { serviceLine: 'EQUIPOS_DE_COMPUTO', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'Impresora', serviceLine: 'EQUIPOS_DE_COMPUTO' },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Teclado' },
+    update: { serviceLine: 'EQUIPOS_DE_COMPUTO', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'Teclado', serviceLine: 'EQUIPOS_DE_COMPUTO' },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Mouse' },
+    update: { serviceLine: 'EQUIPOS_DE_COMPUTO', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'Mouse', serviceLine: 'EQUIPOS_DE_COMPUTO' },
   });
   await prisma.equipmentType.upsert({
     where: { name: 'Televisor' },
-    update: {},
-    create: { name: 'Televisor' },
+    update: { serviceLine: 'EQUIPOS_GENERALES', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'Televisor', serviceLine: 'EQUIPOS_GENERALES' },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Equipo de sonido' },
+    update: { serviceLine: 'EQUIPOS_GENERALES', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'Equipo de sonido', serviceLine: 'EQUIPOS_GENERALES' },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Plancha' },
+    update: { serviceLine: 'EQUIPOS_GENERALES', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'Plancha', serviceLine: 'EQUIPOS_GENERALES' },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'Licuadora' },
+    update: { serviceLine: 'EQUIPOS_GENERALES', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'Licuadora', serviceLine: 'EQUIPOS_GENERALES' },
+  });
+  await prisma.equipmentType.upsert({
+    where: { name: 'DVD' },
+    update: { serviceLine: 'EQUIPOS_GENERALES', requiresCredential: false, allowsUnlockCase: false },
+    create: { name: 'DVD', serviceLine: 'EQUIPOS_GENERALES' },
   });
 
   const hardware = await prisma.faultCategory.upsert({

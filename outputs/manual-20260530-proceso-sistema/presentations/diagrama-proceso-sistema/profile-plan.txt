@@ -1,0 +1,8 @@
+task mode: create
+primary deck-profile: engineering-platform
+secondary profile gates: product-platform, academic presentation
+required proof objects: end-to-end repair workflow, role swimlane, order state map, QR/public tracking flow, WhatsApp decision loop, inventory/payment controls
+source requirements: DIAGRAMA_PROCESOS_OPERATIVOS.md and current system behavior
+brand/authenticity constraints: Universidad Mariano Galvez de Guatemala named in title/closing; no external logo used
+qa gates: editable PPTX, coherent process diagrams, readable slide thumbnails, no demo credentials, no filler slides
+known missing inputs: no official university template or logo supplied

@@ -1,0 +1,39 @@
+services:
+  backend:
+    build:
+      context: ../../backend
+    container_name: talleres_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      APP_DATABASE_URL: ${APP_DATABASE_URL}
+      DB_APP_USER: ${DB_APP_USER}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD}
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      FRONTEND_URL: ${FRONTEND_URL}
+      FRONTEND_URLS: ${FRONTEND_URLS}
+      PUBLIC_FRONTEND_URL: ${PUBLIC_FRONTEND_URL}
+      PORT: 3000
+      PUPPETEER_SKIP_DOWNLOAD: "true"
+      CHROME_EXECUTABLE_PATH: /usr/bin/chromium
+    ports:
+      - "3000:3000"
+    volumes:
+      - whatsapp_session:/app/.wwebjs_auth
+
+  frontend:
+    build:
+      context: ../../frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL}
+    container_name: talleres_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  whatsapp_session:

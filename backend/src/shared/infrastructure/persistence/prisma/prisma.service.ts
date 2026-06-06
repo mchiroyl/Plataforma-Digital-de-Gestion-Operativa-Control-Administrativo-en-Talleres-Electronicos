@@ -56,6 +56,14 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     return this.currentClient.payment;
   }
 
+  get expense() {
+    return this.currentClient.expense;
+  }
+
+  get repairOrderEvidence() {
+    return this.currentClient.repairOrderEvidence;
+  }
+
   get equipmentType() {
     return this.currentClient.equipmentType;
   }

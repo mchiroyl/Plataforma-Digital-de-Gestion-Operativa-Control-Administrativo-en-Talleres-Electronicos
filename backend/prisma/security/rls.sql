@@ -143,6 +143,8 @@ SELECT app_attach_audit_trigger('"InventoryMovement"');
 SELECT app_attach_audit_trigger('"InventorySale"');
 SELECT app_attach_audit_trigger('"InventorySaleItem"');
 SELECT app_attach_audit_trigger('"Payment"');
+SELECT app_attach_audit_trigger('"Expense"');
+SELECT app_attach_audit_trigger('"RepairOrderEvidence"');
 SELECT app_attach_audit_trigger('"ShopSettings"');
 
 ALTER TABLE "Role" ENABLE ROW LEVEL SECURITY;
@@ -312,6 +314,17 @@ CREATE POLICY status_history_public_policy ON "StatusHistory"
         AND app_can_access_public_order(ro.id, ro."trackingToken")
     )
   );
+DROP POLICY IF EXISTS status_history_public_insert_policy ON "StatusHistory";
+CREATE POLICY status_history_public_insert_policy ON "StatusHistory"
+  FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM "RepairOrder" ro
+      WHERE ro.id = "StatusHistory"."orderId"
+        AND app_can_access_public_order(ro.id, ro."trackingToken")
+    )
+  );
 
 ALTER TABLE "QuoteDetail" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "QuoteDetail" FORCE ROW LEVEL SECURITY;
@@ -351,6 +364,27 @@ CREATE POLICY spare_part_public_policy ON "SparePart"
         AND app_can_access_public_order(ro.id, ro."trackingToken")
     )
   );
+DROP POLICY IF EXISTS spare_part_public_quote_update_policy ON "SparePart";
+CREATE POLICY spare_part_public_quote_update_policy ON "SparePart"
+  FOR UPDATE
+  USING (
+    EXISTS (
+      SELECT 1
+      FROM "QuoteDetail" q
+      JOIN "RepairOrder" ro ON ro.id = q."orderId"
+      WHERE q."sparePartId" = "SparePart".id
+        AND app_can_access_public_order(ro.id, ro."trackingToken")
+    )
+  )
+  WITH CHECK (
+    EXISTS (
+      SELECT 1
+      FROM "QuoteDetail" q
+      JOIN "RepairOrder" ro ON ro.id = q."orderId"
+      WHERE q."sparePartId" = "SparePart".id
+        AND app_can_access_public_order(ro.id, ro."trackingToken")
+    )
+  );
 
 ALTER TABLE "InventoryMovement" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "InventoryMovement" FORCE ROW LEVEL SECURITY;
@@ -359,6 +393,17 @@ CREATE POLICY inventory_movement_staff_policy ON "InventoryMovement"
   FOR ALL
   USING (app_is_staff())
   WITH CHECK (app_is_staff());
+DROP POLICY IF EXISTS inventory_movement_public_quote_insert_policy ON "InventoryMovement";
+CREATE POLICY inventory_movement_public_quote_insert_policy ON "InventoryMovement"
+  FOR INSERT
+  WITH CHECK (true);
+DROP POLICY IF EXISTS inventory_movement_public_quote_select_policy ON "InventoryMovement";
+CREATE POLICY inventory_movement_public_quote_select_policy ON "InventoryMovement"
+  FOR SELECT
+  USING (
+    "movementType" = 'SALIDA_ORDEN'
+    AND "referenceType" = 'ORDER_QUOTE'
+  );
 
 ALTER TABLE "InventorySale" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "InventorySale" FORCE ROW LEVEL SECURITY;
@@ -380,6 +425,22 @@ ALTER TABLE "Payment" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "Payment" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS payment_staff_policy ON "Payment";
 CREATE POLICY payment_staff_policy ON "Payment"
+  FOR ALL
+  USING (app_is_staff())
+  WITH CHECK (app_is_staff());
+
+ALTER TABLE "Expense" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "Expense" FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS expense_staff_policy ON "Expense";
+CREATE POLICY expense_staff_policy ON "Expense"
+  FOR ALL
+  USING (app_is_staff())
+  WITH CHECK (app_is_staff());
+
+ALTER TABLE "RepairOrderEvidence" ENABLE ROW LEVEL SECURITY;
+ALTER TABLE "RepairOrderEvidence" FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS repair_order_evidence_staff_policy ON "RepairOrderEvidence";
+CREATE POLICY repair_order_evidence_staff_policy ON "RepairOrderEvidence"
   FOR ALL
   USING (app_is_staff())
   WITH CHECK (app_is_staff());
