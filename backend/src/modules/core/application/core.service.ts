@@ -976,7 +976,7 @@ export class CoreService {
         data: {
           diagnosis: normalized.diagnosis,
           additionalFaultDetail: normalized.additionalFaultDetail,
-          status: order.status === 'CREADO' ? 'EN_REVISION' : order.status,
+          status: (order.status === 'CREADO' || order.status === 'EN_REVISION') ? 'PRESUPUESTO_ENVIADO' : order.status,
         },
       });
       await tx.statusHistory.create({

@@ -2,14 +2,10 @@ import { type CSSProperties, useEffect, useMemo, useState } from 'react'
 import axios from 'axios'
 import {
   Activity,
-  AlertCircle,
   AlertTriangle,
   ArrowLeft,
   Boxes,
-  Briefcase,
   CheckCheck,
-  CheckCircle,
-  Clock,
   CreditCard,
   DollarSign,
   Download,
@@ -426,17 +422,11 @@ function Dashboard({ api, currentRole }: { api: ReturnType<typeof useApi>; curre
   const salesTotal = Number(financial?.inventorySalesRevenue ?? 0)
   const totalExpenses = Number(financial?.expensesTotal ?? 0)
   const netResult = Number(financial?.netProfit ?? totalIncome + salesTotal - totalExpenses)
-  const lowStock = dashboard?.lowStockParts ?? 0
-  
   const pendingQuotes = statusRows.filter((row) => ['PRESUPUESTO_ENVIADO', 'EN_REVISION', 'ESPERANDO_PRESUPUESTO'].includes(row.status)).reduce((total, row) => total + row.count, 0)
   const activeOrders = statusRows.filter((row) => !['FINALIZADO', 'PRESUPUESTO_RECHAZADO', 'DEVUELTO_SIN_REPARAR'].includes(row.status)).reduce((total, row) => total + row.count, 0)
   
   const adminDashboard = currentRole === 'ADMIN'
-  const maxStatus = Math.max(...statusRows.map((row) => row.count), 1)
-  const pipeline = ['CREADO', 'PRESUPUESTO_ENVIADO', 'PRESUPUESTO_ACEPTADO', 'EN_REPARACION', 'LISTO_PARA_RECOGER', 'FINALIZADO', 'PRESUPUESTO_RECHAZADO'].map((status) => ({
-    status,
-    count: statusRows.find((row) => row.status === status)?.count ?? 0,
-  }))
+
 
   const kpis = [
     adminDashboard
@@ -1620,7 +1610,19 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
   const saveDiagnosis = async () => {
     try {
       await api.patch(`/orders/${order.id}/diagnosis`, diagnosis)
-      onMessage('Diagnostico tecnico registrado')
+      if (order.status === 'CREADO' || order.status === 'EN_REVISION') {
+        const draft = buildShortBudgetWhatsappDraft(order, diagnosis.diagnosis || '', totalCost).draft
+        if (draft && draft.message && draft.phone) {
+          try {
+            await api.post('/whatsapp/send', { phone: order.client.phone, message: draft.message, channelKey: 'ORDERS' })
+          } catch (e) {
+            // ignorar error de envío automático
+          }
+        }
+        onMessage('Diagnostico enviado y cliente notificado en automático')
+      } else {
+        onMessage('Diagnostico tecnico registrado')
+      }
       reload()
     } catch (error) {
       onMessage(errorMessage(error))
@@ -1708,7 +1710,7 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
         <div className="mt-2 grid gap-2 md:grid-cols-[1fr_1fr_auto]">
           <textarea className="field" title="Pruebas realizadas y hallazgos reales del tecnico" placeholder="DIAGNOSTICO TECNICO: PRUEBAS REALIZADAS Y HALLAZGOS" value={diagnosis.diagnosis} onChange={(e) => setDiagnosis({ ...diagnosis, diagnosis: e.target.value })} />
           <textarea className="field" title="Fallas nuevas detectadas despues de la revision" placeholder="FALLAS NUEVAS DETECTADAS, POR EJEMPLO: HUMEDAD DANO PANTALLA" value={diagnosis.additionalFaultDetail} onChange={(e) => setDiagnosis({ ...diagnosis, additionalFaultDetail: e.target.value })} />
-          <button className="btn btn-secondary" onClick={saveDiagnosis}><Pencil className="h-4 w-4" />Guardar diagnostico</button>
+          <button className="btn btn-secondary" onClick={saveDiagnosis}><MessageCircle className="h-4 w-4" />Enviar diagnostico</button>
         </div>
       </div>}
       <div className="mt-3 rounded-md border border-slate-200 bg-white p-3">
