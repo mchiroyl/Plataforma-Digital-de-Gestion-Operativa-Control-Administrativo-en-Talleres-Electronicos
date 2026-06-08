@@ -82,6 +82,7 @@ backend/prisma/security/rls_ready.sql
 db-dump/
 backups/
 exports/
+outputs/
 
 
 # ─────────────────────────────────────────────────────────────────────────────

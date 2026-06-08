@@ -8,7 +8,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { PrismaService } from '../../../shared/infrastructure/persistence/prisma/prisma.service';
 import type { AuthUser } from '../../../shared/presentation/http/auth-request.type';
-import { normalizeInput, normalizePlainText } from '../../../shared/utils/text-normalizer';
+import { normalizeInput, normalizePlainText, normalizeSearchText } from '../../../shared/utils/text-normalizer';
 import { buildQuoteDecisionHistory, quoteDecisionFinalStatus } from './quote-decision-flow';
 
 const PROJECT_TITLE = 'Plataforma Digital de Gestion Operativa para el Fortalecimiento del Control Administrativo en Talleres Electronicos';
@@ -84,7 +84,7 @@ export class CoreService {
       ticketFormat: text(data.ticketFormat),
       updatedById: number(data.updatedById),
     };
-    return this.prisma.shopSettings.update({ where: { id: 1 }, data: allowed }).then((settings) => this.safeSettings(settings));
+    return this.prisma.shopSettings.update({ where: { id: 1 }, data: normalizeInput(allowed) }).then((settings) => this.safeSettings(settings));
   }
 
   async publicSettings() {
@@ -338,8 +338,8 @@ export class CoreService {
       async () => {
         const user = await this.prisma.user.create({
           data: {
-            username: data.username.trim().toLowerCase(),
-            email: data.email.trim().toLowerCase(),
+            username: normalizeSearchText(data.username).toLowerCase(),
+            email: normalizeSearchText(data.email).toLowerCase(),
             fullName: normalizePlainText(data.fullName),
             passwordHash: bcrypt.hashSync(data.password, 10),
             roleId: role.id,
@@ -377,8 +377,8 @@ export class CoreService {
         const user = await this.prisma.user.update({
           where: { id },
           data: {
-            username: data.username ? data.username.trim().toLowerCase() : undefined,
-            email: data.email ? data.email.trim().toLowerCase() : undefined,
+            username: data.username ? normalizeSearchText(data.username).toLowerCase() : undefined,
+            email: data.email ? normalizeSearchText(data.email).toLowerCase() : undefined,
             fullName: data.fullName ? normalizePlainText(data.fullName) : undefined,
             passwordHash: data.password ? bcrypt.hashSync(data.password, 10) : undefined,
             roleId: role?.id,
@@ -466,15 +466,16 @@ export class CoreService {
   }
 
   clients(query?: string) {
+    const safeQuery = query ? normalizeSearchText(query) : undefined;
     return this.prisma.client.findMany({
-      where: query
+      where: safeQuery
         ? {
             OR: [
-              { firstName: { contains: query, mode: 'insensitive' } },
-              { lastName: { contains: query, mode: 'insensitive' } },
-              { phone: { contains: query } },
-              { dpi: { contains: query } },
-              { nit: { contains: query } },
+              { firstName: { contains: safeQuery, mode: 'insensitive' } },
+              { lastName: { contains: safeQuery, mode: 'insensitive' } },
+              { phone: { contains: safeQuery } },
+              { dpi: { contains: safeQuery } },
+              { nit: { contains: safeQuery } },
             ],
           }
         : undefined,
@@ -555,7 +556,7 @@ export class CoreService {
         clientId: filters?.clientId,
         brand: filters?.brand ? { contains: normalizePlainText(filters.brand), mode: 'insensitive' } : undefined,
         model: filters?.model ? { contains: normalizePlainText(filters.model), mode: 'insensitive' } : undefined,
-        serialNumber: filters?.serialNumber ? { contains: filters.serialNumber.trim(), mode: 'insensitive' } : undefined,
+        serialNumber: filters?.serialNumber ? { contains: normalizeSearchText(filters.serialNumber), mode: 'insensitive' } : undefined,
         equipmentTypeId: filters?.equipmentTypeId,
         equipmentType: filters?.serviceLine ? { serviceLine: filters.serviceLine } : undefined,
       },
@@ -1463,7 +1464,7 @@ export class CoreService {
 
   private findOrdersForExport(filters: OrderExportFilters) {
     const status = filters.status?.trim();
-    const client = filters.client?.trim();
+    const client = filters.client ? normalizeSearchText(filters.client) : undefined;
     return this.prisma.repairOrder.findMany({
       where: {
         status: status ? (status as OrderStatus) : undefined,
@@ -1603,6 +1604,22 @@ export class CoreService {
   private dashboardPeriod(filters: DashboardFilters) {
     const offsetMs = -6 * 60 * 60 * 1000; // Guatemala UTC-6
     const getLocalNow = () => new Date(Date.now() + offsetMs);
+
+    const parseLocalDate = (value: string, endOfDay = false) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new BadRequestException('Seleccione fechas validas desde el calendario');
+      }
+      const [year, month, day] = value.split('-').map(Number);
+      const localDate = new Date(Date.UTC(year, month - 1, day));
+      if (localDate.getUTCFullYear() !== year || localDate.getUTCMonth() !== month - 1 || localDate.getUTCDate() !== day) {
+        throw new BadRequestException('Seleccione fechas validas desde el calendario');
+      }
+      const hour = endOfDay ? 23 : 0;
+      const minute = endOfDay ? 59 : 0;
+      const second = endOfDay ? 59 : 0;
+      const millisecond = endOfDay ? 999 : 0;
+      return new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond) - offsetMs);
+    };
     
     const startOfLocalDay = (date: Date) => {
       const y = date.getUTCFullYear();
@@ -1618,15 +1635,28 @@ export class CoreService {
       return new Date(Date.UTC(y, m, d, 23, 59, 59, 999) - offsetMs);
     };
 
-    if (filters.period === 'custom' && filters.from && filters.to) {
-      const partsFrom = filters.from.split('-').map(Number);
-      const partsTo = filters.to.split('-').map(Number);
-      const fromLocal = new Date(Date.UTC(partsFrom[0], partsFrom[1] - 1, partsFrom[2]) - offsetMs);
-      const toLocal = new Date(Date.UTC(partsTo[0], partsTo[1] - 1, partsTo[2], 23, 59, 59, 999) - offsetMs);
+    const localNow = getLocalNow();
+
+    if (filters.period === 'custom') {
+      if (!filters.from || !filters.to) {
+        throw new BadRequestException('Seleccione fechas desde el calendario');
+      }
+      const fromLocal = parseLocalDate(filters.from);
+      const toLocal = parseLocalDate(filters.to, true);
+      const minimumLocal = new Date(Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate()) - offsetMs);
+      minimumLocal.setUTCMonth(minimumLocal.getUTCMonth() - 24);
+      const todayEnd = endOfLocalDay(localNow);
+      if (fromLocal > toLocal) {
+        throw new BadRequestException('La fecha inicial no puede ser mayor que la fecha final');
+      }
+      if (fromLocal < minimumLocal || toLocal < minimumLocal) {
+        throw new BadRequestException('El rango personalizado solo permite consultar hasta 24 meses atras');
+      }
+      if (fromLocal > todayEnd || toLocal > todayEnd) {
+        throw new BadRequestException('No se permiten fechas futuras en el tablero');
+      }
       return { from: fromLocal, to: toLocal };
     }
-
-    const localNow = getLocalNow();
 
     if (filters.period === 'day') {
       return { from: startOfLocalDay(localNow), to: endOfLocalDay(localNow) };

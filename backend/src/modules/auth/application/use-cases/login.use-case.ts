@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
 import { USER_CREDENTIALS_REPOSITORY } from '../ports/user-credentials.repository';
 import type { UserCredentialsRepository } from '../ports/user-credentials.repository';
+import { normalizeSearchText } from '../../../../shared/utils/text-normalizer';
 
 @Injectable()
 export class LoginUseCase {
@@ -13,7 +14,8 @@ export class LoginUseCase {
   ) {}
 
   async execute(username: string, password: string) {
-    const user = await this.userCredentialsRepository.findByUsername(username.trim().toLowerCase());
+    const safeUsername = normalizeSearchText(username).toLowerCase();
+    const user = await this.userCredentialsRepository.findByUsername(safeUsername);
     if (!user || !user.isActive) throw new UnauthorizedException('Credenciales invalidas');
 
     const valid = await bcrypt.compare(password, user.passwordHash);

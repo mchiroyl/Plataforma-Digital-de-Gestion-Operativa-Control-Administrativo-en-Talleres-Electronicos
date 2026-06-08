@@ -1,10 +1,14 @@
-import { type CSSProperties, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
 import {
   Activity,
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
+  ArrowUpDown,
   Boxes,
+  Calendar,
   CheckCheck,
   CreditCard,
   DollarSign,
@@ -173,6 +177,9 @@ type Order = {
   history?: { previousStatus?: string | null; newStatus: string; comment?: string | null; changedAt: string }[]
 }
 type OrderHistoryEvent = NonNullable<Order['history']>[number]
+type SortDirection = 'asc' | 'desc'
+type SortConfig<T extends string> = { key: T; direction: SortDirection }
+type SortOption<T extends string> = { key: T; label: string }
 
 type DashboardPayload = {
   ordersByStatus?: { status: string; _count: { id: number } }[]
@@ -250,6 +257,58 @@ function shopDisplayName(settings?: ShopSettings | null) {
   return name && normalizeDisplayText(name) !== normalizeDisplayText(PROJECT_TITLE) ? name : 'Sistema de Servicio Tecnico'
 }
 
+type SecurityField = { label: string; value: unknown }
+
+const SECURITY_PATTERNS = [
+  /^=\s*['"`]?.+/i,
+  /(?:^|[\s'"`])(?:or|and)\s+['"`]?\w+['"`]?\s*=\s*['"`]?\w+/i,
+  /\bunion\s+select\b/i,
+  /;\s*(?:drop|delete|truncate|insert|update|alter|create)\b/i,
+  /--|\/\*|\*\//,
+  /\b(?:select|insert|update|delete|drop|alter|truncate)\b.+\b(?:from|where|table|into|set)\b/i,
+]
+
+function hasUnsafeText(value: unknown) {
+  if (typeof value !== 'string') return false
+  const candidate = value.trim()
+  return Boolean(candidate) && SECURITY_PATTERNS.some((pattern) => pattern.test(candidate))
+}
+
+function unsafeFieldLabels(fields: SecurityField[]) {
+  return Array.from(new Set(fields.filter((field) => hasUnsafeText(field.value)).map((field) => field.label)))
+}
+
+function unsafeFieldMessage(labels: string[]) {
+  if (labels.length === 0) return ''
+  if (labels.length === 1) return `El campo "${labels[0]}" contiene caracteres no permitidos`
+  return `Los campos ${labels.map((label) => `"${label}"`).join(', ')} contienen caracteres no permitidos`
+}
+
+function notifyUnsafeFields(fields: SecurityField[], onMessage: (m: string) => void) {
+  const message = unsafeFieldMessage(unsafeFieldLabels(fields))
+  if (!message) return false
+  onMessage(message)
+  return true
+}
+
+function normalizeSecurityErrorText(message: string) {
+  return message.toLocaleLowerCase('es-GT').includes('expresion no permitida por seguridad')
+    ? 'El campo contiene caracteres no permitidos'
+    : message
+}
+
+function FloatingMessage({ message, onClose }: { message: string; onClose: () => void }) {
+  return (
+    <div className="floating-message" role="alert" aria-live="assertive">
+      <AlertTriangle className="h-5 w-5 shrink-0" />
+      <span>{message}</span>
+      <button type="button" className="floating-message-close" onClick={onClose} title="Cerrar mensaje">
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
 function App() {
   const trackingRoute = resolveTrackingRoute()
   if (trackingRoute) return <TrackingPage orderCode={trackingRoute.orderCode} token={trackingRoute.token} />
@@ -277,6 +336,12 @@ function App() {
       if (data?.currency) setCurrencySymbol(data.currency === 'GTQ' ? 'Q' : data.currency)
     }).catch(() => null)
   }, [])
+
+  useEffect(() => {
+    if (!message) return
+    const timeout = window.setTimeout(() => setMessage(''), 6000)
+    return () => window.clearTimeout(timeout)
+  }, [message])
 
   if (!session) return <Login onLogin={setSession} />
   const currentRole = normalizeRole(session.user.role)
@@ -322,7 +387,7 @@ function App() {
         </nav>
 
         <section className="space-y-4">
-          {message && <div className="panel border-teal-300 bg-teal-50 p-3 text-sm font-semibold text-teal-900">{message}</div>}
+          {message && <FloatingMessage message={message} onClose={() => setMessage('')} />}
           {tab !== currentTab && <AccessDenied role={currentRole} />}
           {currentTab === 'dashboard' && <Dashboard api={api} currentRole={currentRole} />}
           {currentTab === 'orders' && <Orders api={api} onMessage={setMessage} onDraft={setDraft} currentRole={currentRole} currentUser={session.user} />}
@@ -344,14 +409,21 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
   const [settings, setSettings] = useState<ShopSettings | null>(null)
 
   useEffect(() => {
     axios.get(`${API_URL}/public/settings`).then((response) => setSettings(response.data)).catch(() => null)
   }, [])
+  useEffect(() => {
+    if (!message) return
+    const timeout = window.setTimeout(() => setMessage(''), 6000)
+    return () => window.clearTimeout(timeout)
+  }, [message])
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([{ label: 'Usuario', value: username }], setMessage)) return
     try {
       const { data } = await axios.post(`${API_URL}/auth/login`, { username, password })
       localStorage.setItem('session', JSON.stringify(data))
@@ -363,6 +435,7 @@ function Login({ onLogin }: { onLogin: (session: Session) => void }) {
 
   return (
     <main className="login-screen">
+      {message && <FloatingMessage message={message} onClose={() => setMessage('')} />}
       <form onSubmit={submit} className="login-card">
         <div className="mb-6 text-center">
           {settings?.hasLogo && <img className="login-logo" src={publicBackendUrl(settings.logoUrl, settings.logoUpdatedAt ?? settings.updatedAt)} alt="Logotipo del taller" />}
@@ -400,8 +473,163 @@ function Dashboard({ api, currentRole }: { api: ReturnType<typeof useApi>; curre
   const [dashboard, setDashboard] = useState<DashboardPayload>()
   const [period, setPeriod] = useState<'day' | 'week' | 'month' | 'year' | 'custom'>('month')
   const [customRange, setCustomRange] = useState({ from: '', to: '' })
+  const [message, setMessage] = useState('')
+  const customFromPickerRef = useRef<HTMLInputElement>(null)
+  const customToPickerRef = useRef<HTMLInputElement>(null)
+
+  const toDateInputValue = (date: Date) => {
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+    return local.toISOString().slice(0, 10)
+  }
+
+  const dashboardMaxDate = toDateInputValue(new Date())
+  const dashboardMinDate = (() => {
+    const date = new Date()
+    date.setMonth(date.getMonth() - 24)
+    return toDateInputValue(date)
+  })()
+  const defaultCustomFrom = (() => {
+    const date = new Date()
+    date.setDate(date.getDate() - 30)
+    return toDateInputValue(date)
+  })()
 
   useEffect(() => {
+    if (message) {
+      const timer = window.setTimeout(() => setMessage(''), 6000)
+      return () => window.clearTimeout(timer)
+    }
+    return undefined
+  }, [message])
+
+  useEffect(() => {
+    if (period === 'custom' && (!customRange.from || !customRange.to)) {
+      setCustomRange({ from: defaultCustomFrom, to: dashboardMaxDate })
+    }
+  }, [period, customRange.from, customRange.to, defaultCustomFrom, dashboardMaxDate])
+
+  const validateCustomRange = () => {
+    if (period !== 'custom') return true
+    if (!customRange.from || !customRange.to) {
+      setMessage('Seleccione fechas desde el calendario. No escriba la fecha manualmente.')
+      return false
+    }
+    if (customRange.from > customRange.to) {
+      setMessage('La fecha inicial no puede ser mayor que la fecha final.')
+      return false
+    }
+    if (customRange.from < dashboardMinDate || customRange.to < dashboardMinDate) {
+      setMessage('El rango personalizado solo permite consultar hasta 24 meses atras.')
+      return false
+    }
+    if (customRange.from > dashboardMaxDate || customRange.to > dashboardMaxDate) {
+      setMessage('No se permiten fechas futuras en el tablero.')
+      return false
+    }
+    return true
+  }
+
+  const showCalendarOnlyMessage = () => {
+    setMessage('Seleccione fechas desde el calendario. No escriba la fecha manualmente.')
+  }
+
+  const openDatePicker = (input: HTMLInputElement | null) => {
+    if (!input) return
+    try {
+      ;(input as HTMLInputElement & { showPicker?: () => void }).showPicker?.()
+    } catch {
+      // Some browsers only allow opening the picker from direct user interaction.
+    }
+    input.focus()
+  }
+
+  const isDateInputValue = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value)
+
+  const formatCalendarDate = (value: string) => {
+    if (!isDateInputValue(value)) return 'Seleccione fecha'
+    const [year, month, day] = value.split('-')
+    return `${day}/${month}/${year}`
+  }
+
+  const handleCustomDateChange = (field: 'from' | 'to', value: string) => {
+    if (!isDateInputValue(value)) {
+      showCalendarOnlyMessage()
+      return
+    }
+
+    if (value < dashboardMinDate) {
+      setMessage('El rango personalizado solo permite consultar hasta 24 meses atras.')
+      return
+    }
+
+    if (value > dashboardMaxDate) {
+      setMessage('No se permiten fechas futuras en el tablero.')
+      return
+    }
+
+    const nextRange = { ...customRange, [field]: value }
+    if (nextRange.from && nextRange.to && nextRange.from > nextRange.to) {
+      setMessage('La fecha inicial no puede ser mayor que la fecha final.')
+      return
+    }
+
+    setCustomRange(nextRange)
+  }
+
+  const renderCalendarOnlyField = (field: 'from' | 'to', label: string, value: string, ref: RefObject<HTMLInputElement | null>) => (
+    <div className="calendar-only-field">
+      <button
+        type="button"
+        className="calendar-visible-field"
+        onClick={() => openDatePicker(ref.current)}
+        onKeyDown={(event) => {
+          if (event.key.length === 1 || event.key === 'Backspace' || event.key === 'Delete') {
+            event.preventDefault()
+            showCalendarOnlyMessage()
+          }
+        }}
+        onPaste={(event) => {
+          event.preventDefault()
+          showCalendarOnlyMessage()
+        }}
+        title="Seleccione la fecha desde el calendario. No escriba manualmente."
+      >
+        <span>
+          <small>{label}</small>
+          {formatCalendarDate(value)}
+        </span>
+        <Calendar className="h-5 w-5" aria-hidden="true" />
+      </button>
+      <input
+        ref={ref}
+        className="calendar-native-input"
+        type="date"
+        min={dashboardMinDate}
+        max={dashboardMaxDate}
+        value={value}
+        tabIndex={-1}
+        aria-label={label}
+        onKeyDown={(event) => {
+          event.preventDefault()
+          showCalendarOnlyMessage()
+        }}
+        onPaste={(event) => {
+          event.preventDefault()
+          showCalendarOnlyMessage()
+        }}
+        onInput={(event) => {
+          if (event.currentTarget.value && !isDateInputValue(event.currentTarget.value)) {
+            event.currentTarget.value = value
+            showCalendarOnlyMessage()
+          }
+        }}
+        onChange={(event) => handleCustomDateChange(field, event.target.value)}
+      />
+    </div>
+  )
+
+  useEffect(() => {
+    if (!validateCustomRange()) return
     const params = new URLSearchParams({ period })
     if (period === 'custom') {
       if (customRange.from) params.set('from', customRange.from)
@@ -411,7 +639,7 @@ function Dashboard({ api, currentRole }: { api: ReturnType<typeof useApi>; curre
       .then((response) => {
         setDashboard(response.data)
       })
-      .catch(() => null)
+      .catch((error) => setMessage(errorMessage(error)))
   }, [api, period, customRange.from, customRange.to, currentRole])
 
   const statusRows = dashboard?.ordersByStatus?.map((row) => ({ status: row.status, count: row._count.id })) ?? []
@@ -461,19 +689,28 @@ function Dashboard({ api, currentRole }: { api: ReturnType<typeof useApi>; curre
               ['year', 'Año'],
               ['custom', 'Personalizado'],
             ].map(([key, label]) => (
-              <button key={key} type="button" className={`period-tab ${period === key ? 'active' : ''}`} onClick={() => setPeriod(key as typeof period)}>
+              <button
+                key={key}
+                type="button"
+                className={`period-tab ${period === key ? 'active' : ''}`}
+                onClick={() => {
+                  if (key === 'custom') setCustomRange({ from: defaultCustomFrom, to: dashboardMaxDate })
+                  setPeriod(key as typeof period)
+                }}
+              >
                 {label}
               </button>
             ))}
           </div>
           {period === 'custom' && (
             <div className="custom-range flex gap-2">
-              <input className="field py-1.5 text-sm" type="date" value={customRange.from} onChange={(event) => setCustomRange({ ...customRange, from: event.target.value })} />
-              <input className="field py-1.5 text-sm" type="date" value={customRange.to} onChange={(event) => setCustomRange({ ...customRange, to: event.target.value })} />
+              {renderCalendarOnlyField('from', 'Desde', customRange.from, customFromPickerRef)}
+              {renderCalendarOnlyField('to', 'Hasta', customRange.to, customToPickerRef)}
             </div>
           )}
         </section>
       )}
+      {message && <FloatingMessage message={message} onClose={() => setMessage('')} />}
 
       {/* KPI Cards Row */}
       <div className="grid gap-3 md:grid-cols-4">
@@ -807,6 +1044,7 @@ function Clients({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage
   const [editingId, setEditingId] = useState<number | null>(null)
   const [view, setView] = useState<'form' | 'list'>('form')
   const [searchTerm, setSearchTerm] = useState('')
+  const [sort, setSort] = useState<SortConfig<'name' | 'phone' | 'dpi' | 'nit'>>({ key: 'name', direction: 'asc' })
   const load = () => api.get('/clients').then((r) => setItems(r.data))
   useEffect(() => { load() }, [])
   const filteredItems = items.filter((item) => {
@@ -814,8 +1052,21 @@ function Clients({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage
     if (!query) return true
     return [formatClientName(item), item.phone, item.dpi, item.nit].filter(Boolean).join(' ').toLocaleUpperCase('es-GT').includes(query)
   })
+  const sortedItems = sortItems(filteredItems, (item) => {
+    if (sort.key === 'phone') return item.phone
+    if (sort.key === 'dpi') return item.dpi
+    if (sort.key === 'nit') return item.nit
+    return formatClientName(item)
+  }, sort.direction)
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([
+      { label: 'Nombres', value: form.firstName },
+      { label: 'Apellidos', value: form.lastName },
+      { label: 'Telefono', value: form.phone },
+      { label: 'DPI', value: form.dpi },
+      { label: 'NIT', value: form.nit },
+    ], onMessage)) return
     try {
       if (editingId) {
         await api.patch(`/clients/${editingId}`, clean(form))
@@ -858,8 +1109,18 @@ function Clients({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage
             onChange={(event) => setSearchTerm(event.target.value)}
           />
         </div>
+        <SortControls
+          options={[
+            { key: 'name', label: 'Nombre' },
+            { key: 'phone', label: 'Telefono' },
+            { key: 'dpi', label: 'DPI' },
+            { key: 'nit', label: 'NIT' },
+          ]}
+          config={sort}
+          onChange={setSort}
+        />
         <List>
-          {filteredItems.length ? filteredItems.map((item) => (
+          {sortedItems.length ? sortedItems.map((item) => (
             <Row
               key={item.id}
               title={formatClientName(item)}
@@ -1037,6 +1298,7 @@ function EquipmentPanel({ api, onMessage, currentRole }: { api: ReturnType<typeo
   const [editingId, setEditingId] = useState<number | null>(null)
   const [showSearch, setShowSearch] = useState(false)
   const [searchFilters, setSearchFilters] = useState({ clientId: '', brand: '', model: '', serialNumber: '', serviceLine: '', equipmentTypeId: '' })
+  const [sort, setSort] = useState<SortConfig<'client' | 'line' | 'type' | 'brand' | 'model' | 'serial' | 'created' | 'lastOrder'>>({ key: 'created', direction: 'desc' })
   const load = () => Promise.all([api.get('/clients'), api.get('/equipment-types'), api.get('/equipment')]).then(([c, t, e]) => {
     setClients(c.data); setTypes(t.data); setItems(e.data)
   })
@@ -1046,6 +1308,14 @@ function EquipmentPanel({ api, onMessage, currentRole }: { api: ReturnType<typeo
   const canManageEquipment = ['ADMIN', 'RECEPCIONISTA'].includes(currentRole)
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([
+      { label: 'Marca del equipo', value: form.brand },
+      { label: 'Modelo del equipo', value: form.model },
+      { label: 'Serie o IMEI', value: form.serialNumber },
+      { label: 'Color del equipo', value: form.color },
+      { label: 'Estado fisico', value: form.physicalDescription },
+      { label: 'Accesorios incluidos', value: form.accessories },
+    ], onMessage)) return
     try {
       const payload = clean({ ...form, clientId: Number(form.clientId), equipmentTypeId: Number(form.equipmentTypeId) })
       delete payload.serviceLine
@@ -1091,6 +1361,16 @@ function EquipmentPanel({ api, onMessage, currentRole }: { api: ReturnType<typeo
     setShowSearch(true)
   }
   const cancelEdit = () => { setEditingId(null); setForm(emptyForm) }
+  const sortedItems = sortItems(items, (item) => {
+    if (sort.key === 'client') return formatClientName(item.client)
+    if (sort.key === 'line') return serviceLineLabel(item.equipmentType?.serviceLine)
+    if (sort.key === 'type') return item.equipmentType?.name
+    if (sort.key === 'brand') return item.brand
+    if (sort.key === 'model') return item.model
+    if (sort.key === 'serial') return item.serialNumber
+    if (sort.key === 'lastOrder') return item.lastOrder?.orderCode
+    return item.createdAt ? new Date(item.createdAt).getTime() : 0
+  }, sort.direction)
   const headerAction = (
     <button type="button" className="btn btn-secondary" onClick={openEquipmentSearch}>
       <Search className="h-4 w-4" />
@@ -1144,6 +1424,20 @@ function EquipmentPanel({ api, onMessage, currentRole }: { api: ReturnType<typeo
               <input className="field" placeholder="Serie o IMEI" value={searchFilters.serialNumber} onChange={(e) => setSearchFilters({ ...searchFilters, serialNumber: e.target.value })} />
             </div>
             <button type="button" className="btn btn-primary mb-3" onClick={searchEquipment}><Search className="h-4 w-4" />Buscar</button>
+            <SortControls
+              options={[
+                { key: 'client', label: 'Cliente' },
+                { key: 'line', label: 'Linea' },
+                { key: 'type', label: 'Tipo' },
+                { key: 'brand', label: 'Marca' },
+                { key: 'model', label: 'Modelo' },
+                { key: 'serial', label: 'Serie' },
+                { key: 'created', label: 'Fecha' },
+                { key: 'lastOrder', label: 'Ultima orden' },
+              ]}
+              config={sort}
+              onChange={setSort}
+            />
             <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
               <table className="w-full min-w-[980px] text-left text-sm">
                 <thead className="bg-slate-100 text-xs uppercase text-slate-500">
@@ -1160,7 +1454,7 @@ function EquipmentPanel({ api, onMessage, currentRole }: { api: ReturnType<typeo
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((item) => (
+                  {sortedItems.map((item) => (
                     <tr key={item.id} className="border-t border-slate-100">
                       <td className="p-2">{item.client?.firstName ?? ''} {item.client?.lastName ?? ''}</td>
                       <td className="p-2">{serviceLineLabel(item.equipmentType?.serviceLine)}</td>
@@ -1182,7 +1476,7 @@ function EquipmentPanel({ api, onMessage, currentRole }: { api: ReturnType<typeo
                       <td className="p-2">{canManageEquipment ? <button type="button" className="btn btn-secondary" onClick={() => edit(item)}><Pencil className="h-4 w-4" />Editar</button> : <span className="text-xs font-bold text-slate-500">Solo consulta</span>}</td>
                     </tr>
                   ))}
-                  {!items.length && (
+                  {!sortedItems.length && (
                     <tr>
                       <td colSpan={9} className="p-4 text-center font-semibold text-slate-500">No hay equipos con esos filtros.</td>
                     </tr>
@@ -1208,6 +1502,7 @@ function Orders({ api, onMessage, onDraft, currentRole, currentUser }: { api: Re
   const [editingId, setEditingId] = useState<number | null>(null)
   const [selectedOrderId, setSelectedOrderId] = useState<number | null>(null)
   const [ordersView, setOrdersView] = useState<'form' | 'list' | 'detail'>('form')
+  const [sort, setSort] = useState<SortConfig<'code' | 'status' | 'client' | 'equipment' | 'total'>>({ key: 'code', direction: 'desc' })
   const canManageOrderIntake = ['ADMIN', 'RECEPCIONISTA'].includes(currentRole)
   const canExportOrders = currentRole === 'ADMIN'
   const selectedOrder = orders.find((order) => order.id === selectedOrderId)
@@ -1236,6 +1531,12 @@ function Orders({ api, onMessage, onDraft, currentRole, currentUser }: { api: Re
   }, [currentRole, canManageOrderIntake])
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([
+      { label: 'Problema reportado', value: form.reportedIssue },
+      { label: 'Falla adicional', value: form.additionalFaultDetail },
+      { label: 'Clave, PIN o patron', value: form.unlockCredentialValue },
+      { label: 'Notas de desbloqueo', value: form.unlockCredentialNotes },
+    ], onMessage)) return
     try {
       const payload = clean({ ...form, clientId: Number(form.clientId), equipmentId: Number(form.equipmentId), technicianId: form.technicianId ? Number(form.technicianId) : undefined })
       if (editingId) {
@@ -1319,6 +1620,13 @@ function Orders({ api, onMessage, onDraft, currentRole, currentUser }: { api: Re
     : form.unlockCredentialType === 'CONTRASENA'
       ? 'CONTRASENA EXACTA, RESPETA MAYUSCULAS Y MINUSCULAS'
       : 'PIN O CLAVE EXACTA'
+  const sortedOrders = sortItems(orders, (order) => {
+    if (sort.key === 'status') return formatStatus(order.status)
+    if (sort.key === 'client') return formatClientName(order.client)
+    if (sort.key === 'equipment') return `${order.equipment.equipmentType?.name ?? ''} ${order.equipment.brand} ${order.equipment.model}`
+    if (sort.key === 'total') return Number(order.totalCost)
+    return order.orderCode
+  }, sort.direction)
   return (
     <div className="space-y-4">
       {canManageOrderIntake && ordersView === 'form' ? (
@@ -1415,8 +1723,19 @@ function Orders({ api, onMessage, onDraft, currentRole, currentUser }: { api: Re
               </>}
             </div>
           </div>
+          <SortControls
+            options={[
+              { key: 'code', label: 'Orden' },
+              { key: 'status', label: 'Estado' },
+              { key: 'client', label: 'Cliente' },
+              { key: 'equipment', label: 'Equipo' },
+              { key: 'total', label: 'Total' },
+            ]}
+            config={sort}
+            onChange={setSort}
+          />
           <div className="space-y-3">
-            {orders.map((order) => (
+            {sortedOrders.map((order) => (
               <AssignedOrderSummaryCard key={order.id} order={order} onOpen={() => openOrderDetail(order.id)} />
             ))}
             {!orders.length && <div className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">{canManageOrderIntake ? 'No hay ordenes creadas.' : 'No tiene ordenes asignadas en este momento.'}</div>}
@@ -1557,6 +1876,7 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
   const quoteDecisionLabel = order.quoteApproved === true ? 'Presupuesto aceptado' : order.quoteApproved === false ? 'Presupuesto rechazado' : 'Respuesta pendiente'
   const quoteDecisionClass = order.quoteApproved === true ? 'text-teal-700' : order.quoteApproved === false ? 'text-red-700' : 'text-amber-700'
   const addQuote = async () => {
+    if (notifyUnsafeFields([{ label: 'Descripcion del presupuesto', value: quote.description }], onMessage)) return
     try {
       const wasFirstQuote = !editingQuoteId && (!order.quotes || order.quotes.length === 0)
       const projectedTotal = wasFirstQuote ? quote.quantity * quote.unitPrice : Number(order.totalCost)
@@ -1608,6 +1928,10 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
     }
   }
   const saveDiagnosis = async () => {
+    if (notifyUnsafeFields([
+      { label: 'Diagnostico tecnico', value: diagnosis.diagnosis },
+      { label: 'Falla adicional', value: diagnosis.additionalFaultDetail },
+    ], onMessage)) return
     try {
       await api.patch(`/orders/${order.id}/diagnosis`, diagnosis)
       if (order.status === 'CREADO' || order.status === 'EN_REVISION') {
@@ -1629,6 +1953,7 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
     }
   }
   const addPayment = async () => {
+    if (notifyUnsafeFields([{ label: 'Metodo de pago', value: payment.paymentMethod }], onMessage)) return
     try {
       const { data } = await api.post(`/orders/${order.id}/payments`, payment)
       setPayment({ amount: 0, paymentMethod: 'EFECTIVO' })
@@ -1640,6 +1965,7 @@ function OrderCard({ order, spareParts, api, onStatus, onMessage, reload, onEdit
     }
   }
   const addEvidence = async () => {
+    if (notifyUnsafeFields([{ label: 'Descripcion de evidencia', value: evidence.description }], onMessage)) return
     try {
       if (!evidence.file) {
         onMessage('Seleccione una imagen para la evidencia')
@@ -1856,10 +2182,16 @@ function Inventory({ api, onMessage, currentRole }: { api: ReturnType<typeof use
   const [editingId, setEditingId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const [view, setView] = useState<'form' | 'list'>('form')
+  const [sort, setSort] = useState<SortConfig<'code' | 'name' | 'category' | 'stock' | 'price'>>({ key: 'name', direction: 'asc' })
   const load = () => api.get('/spare-parts').then((r) => setItems(r.data))
   useEffect(() => { load() }, [])
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([
+      { label: 'Codigo interno', value: form.internalCode },
+      { label: 'Nombre del repuesto', value: form.name },
+      { label: 'Categoria', value: form.category },
+    ], onMessage)) return
     try {
       if (editingId) {
         await api.patch(`/spare-parts/${editingId}`, form)
@@ -1896,6 +2228,13 @@ function Inventory({ api, onMessage, currentRole }: { api: ReturnType<typeof use
     const haystack = [item.internalCode, item.name, item.category, item.brand ?? '', item.model ?? ''].join(' ').toLocaleUpperCase('es-GT')
     return haystack.includes(normalizedSearch)
   })
+  const sortedItems = sortItems(filteredItems, (item) => {
+    if (sort.key === 'code') return item.internalCode
+    if (sort.key === 'category') return item.category
+    if (sort.key === 'stock') return Number(item.currentStock)
+    if (sort.key === 'price') return Number(item.publicSalePrice)
+    return item.name
+  }, sort.direction)
   const inventoryList = (
     <section className="panel space-y-4 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1921,8 +2260,19 @@ function Inventory({ api, onMessage, currentRole }: { api: ReturnType<typeof use
         />
         <span className="whitespace-nowrap text-sm font-bold text-slate-600">{filteredItems.length} visibles</span>
       </div>
+      <SortControls
+        options={[
+          { key: 'code', label: 'Codigo' },
+          { key: 'name', label: 'Nombre' },
+          { key: 'category', label: 'Categoria' },
+          { key: 'stock', label: 'Stock' },
+          { key: 'price', label: 'Precio' },
+        ]}
+        config={sort}
+        onChange={setSort}
+      />
       <List>
-        {filteredItems.length ? filteredItems.map((item) => (
+        {sortedItems.length ? sortedItems.map((item) => (
           <Row
             key={item.id}
             title={`${item.internalCode} - ${item.name}`}
@@ -1976,6 +2326,7 @@ function Sales({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage: 
   const [items, setItems] = useState<{ sparePartId: number; name: string; quantity: number; unitPrice: number; subtotal: number }[]>([])
   const [view, setView] = useState<'form' | 'list'>('form')
   const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<SortConfig<'code' | 'client' | 'method' | 'total' | 'date'>>({ key: 'date', direction: 'desc' })
   const load = () => Promise.all([api.get('/clients'), api.get('/spare-parts'), api.get('/inventory-sales')]).then(([c, p, s]) => {
     setClients(c.data); setParts(p.data); setSales(s.data)
   })
@@ -1990,6 +2341,7 @@ function Sales({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage: 
   }
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([{ label: 'Observaciones de venta', value: form.notes }], onMessage)) return
     try {
       await api.post('/inventory-sales', {
         clientId: Number(form.clientId),
@@ -2017,6 +2369,13 @@ function Sales({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage: 
     ].join(' ').toLocaleUpperCase('es-GT')
     return haystack.includes(normalizedSearch)
   })
+  const sortedSales = sortItems(filteredSales, (sale) => {
+    if (sort.key === 'client') return formatClientName(sale.client)
+    if (sort.key === 'method') return sale.paymentMethod
+    if (sort.key === 'total') return Number(sale.totalAmount)
+    if (sort.key === 'date') return new Date(sale.createdAt).getTime()
+    return sale.saleCode
+  }, sort.direction)
   if (view === 'list') {
     return (
       <section className="panel space-y-4 p-4">
@@ -2039,8 +2398,19 @@ function Sales({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessage: 
           />
           <span className="whitespace-nowrap text-sm font-bold text-slate-600">{filteredSales.length} visibles</span>
         </div>
+        <SortControls
+          options={[
+            { key: 'code', label: 'Venta' },
+            { key: 'client', label: 'Cliente' },
+            { key: 'method', label: 'Metodo' },
+            { key: 'total', label: 'Total' },
+            { key: 'date', label: 'Fecha' },
+          ]}
+          config={sort}
+          onChange={setSort}
+        />
         <List>
-          {filteredSales.length ? filteredSales.map((sale) => (
+          {sortedSales.length ? sortedSales.map((sale) => (
             <Row
               key={sale.id}
               title={`${sale.saleCode} - ${formatClientName(sale.client)}`}
@@ -2113,10 +2483,18 @@ function Expenses({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessag
   const [editingId, setEditingId] = useState<number | null>(null)
   const [view, setView] = useState<'form' | 'list'>('form')
   const [search, setSearch] = useState('')
+  const [sort, setSort] = useState<SortConfig<'date' | 'category' | 'amount' | 'method' | 'responsible'>>({ key: 'date', direction: 'desc' })
   const load = () => api.get('/expenses').then((r) => setItems(r.data))
   useEffect(() => { load() }, [])
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([
+      { label: 'Categoria del gasto', value: form.category },
+      { label: 'Descripcion del gasto', value: form.description },
+      { label: 'Metodo de pago', value: form.paymentMethod },
+      { label: 'Responsable del gasto', value: form.responsible },
+      { label: 'Notas internas', value: form.notes },
+    ], onMessage)) return
     try {
       if (editingId) {
         await api.patch(`/expenses/${editingId}`, clean(form))
@@ -2153,6 +2531,13 @@ function Expenses({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessag
     const haystack = [item.category, item.description, item.paymentMethod, item.responsible, item.notes ?? ''].join(' ').toLocaleUpperCase('es-GT')
     return haystack.includes(normalizedSearch)
   })
+  const sortedItems = sortItems(filteredItems, (item) => {
+    if (sort.key === 'category') return item.category
+    if (sort.key === 'amount') return Number(item.amount)
+    if (sort.key === 'method') return item.paymentMethod
+    if (sort.key === 'responsible') return item.responsible
+    return new Date(item.spentAt).getTime()
+  }, sort.direction)
   const filteredTotal = filteredItems.reduce((sum, item) => sum + Number(item.amount), 0)
   if (view === 'list') {
     return (
@@ -2176,8 +2561,19 @@ function Expenses({ api, onMessage }: { api: ReturnType<typeof useApi>; onMessag
           />
           <span className="whitespace-nowrap text-sm font-bold text-slate-600">Q {filteredTotal.toFixed(2)}</span>
         </div>
+        <SortControls
+          options={[
+            { key: 'date', label: 'Fecha' },
+            { key: 'category', label: 'Categoria' },
+            { key: 'amount', label: 'Monto' },
+            { key: 'method', label: 'Metodo' },
+            { key: 'responsible', label: 'Responsable' },
+          ]}
+          config={sort}
+          onChange={setSort}
+        />
         <List>
-          {filteredItems.length ? filteredItems.map((item) => (
+          {sortedItems.length ? sortedItems.map((item) => (
             <Row
               key={item.id}
               title={`${item.category} - ${currentCurrencySymbol} ${Number(item.amount).toFixed(2)}`}
@@ -2287,6 +2683,17 @@ function ShopIdentityPanel({ api, onMessage }: { api: ReturnType<typeof useApi>;
 
   const saveSettings = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([
+      { label: 'Nombre comercial', value: form.shopName },
+      { label: 'Eslogan', value: form.slogan },
+      { label: 'Telefono', value: form.phone },
+      { label: 'WhatsApp', value: form.whatsapp },
+      { label: 'Direccion', value: form.address },
+      { label: 'Correo', value: form.contactEmail },
+      { label: 'Terminos', value: form.termsText },
+      { label: 'Privacidad', value: form.privacyText },
+      { label: 'Moneda', value: form.currency },
+    ], onMessage)) return
     try {
       setSaving(true)
       await api.patch('/settings', clean(form))
@@ -2365,6 +2772,7 @@ function EquipmentTypesPanel({ api, onMessage }: { api: ReturnType<typeof useApi
   const [showTypesModal, setShowTypesModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [typeSearch, setTypeSearch] = useState('')
+  const [sort, setSort] = useState<SortConfig<'name' | 'line' | 'credential' | 'unlock'>>({ key: 'line', direction: 'asc' })
   const load = () => api.get('/equipment-types?includeInactive=true').then((response) => setTypes(response.data))
   useEffect(() => { load() }, [])
   const normalizedTypeSearch = typeSearch.trim().toLocaleUpperCase('es-GT')
@@ -2376,9 +2784,16 @@ function EquipmentTypesPanel({ api, onMessage }: { api: ReturnType<typeof useApi
       .toLocaleUpperCase('es-GT')
       .includes(normalizedTypeSearch)
   })
+  const sortedTypes = sortItems(filteredTypes, (type) => {
+    if (sort.key === 'line') return serviceLineLabel(type.serviceLine)
+    if (sort.key === 'credential') return type.requiresCredential ? 1 : 0
+    if (sort.key === 'unlock') return type.allowsUnlockCase ? 1 : 0
+    return type.name
+  }, sort.direction)
 
   const submitType = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([{ label: 'Nombre del tipo', value: typeForm.name }], onMessage)) return
     try {
       await api.post('/equipment-types', typeForm)
       onMessage('Tipo de equipo creado')
@@ -2392,6 +2807,7 @@ function EquipmentTypesPanel({ api, onMessage }: { api: ReturnType<typeof useApi
   const updateType = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!editingTypeId) return
+    if (notifyUnsafeFields([{ label: 'Nombre del tipo', value: editForm.name }], onMessage)) return
     try {
       await api.patch(`/equipment-types/${editingTypeId}`, editForm)
       onMessage('Tipo de equipo actualizado')
@@ -2473,9 +2889,19 @@ function EquipmentTypesPanel({ api, onMessage }: { api: ReturnType<typeof useApi
               <Search className="h-4 w-4 text-slate-500" />
               <input className="w-full border-0 bg-transparent py-2 outline-none" placeholder="Buscar por nombre, linea, clave o bloqueo" value={typeSearch} onChange={(e) => setTypeSearch(e.target.value)} />
             </div>
+            <SortControls
+              options={[
+                { key: 'line', label: 'Linea' },
+                { key: 'name', label: 'Tipo' },
+                { key: 'credential', label: 'Clave' },
+                { key: 'unlock', label: 'Bloqueo' },
+              ]}
+              config={sort}
+              onChange={setSort}
+            />
             <div className="space-y-3">
               {SERVICE_LINES.map((line) => {
-                const lineTypes = filteredTypes.filter((type) => type.serviceLine === line.key)
+                const lineTypes = sortedTypes.filter((type) => type.serviceLine === line.key)
                 if (!lineTypes.length) return null
                 return (
                   <section key={line.key} className="rounded-xl border border-slate-200 bg-white p-3">
@@ -2507,7 +2933,7 @@ function EquipmentTypesPanel({ api, onMessage }: { api: ReturnType<typeof useApi
                   </section>
                 )
               })}
-              {!filteredTypes.length && <p className="rounded-xl border border-dashed border-slate-200 p-4 text-center font-semibold text-slate-500">No hay tipos de equipo con ese criterio.</p>}
+              {!sortedTypes.length && <p className="rounded-xl border border-dashed border-slate-200 p-4 text-center font-semibold text-slate-500">No hay tipos de equipo con ese criterio.</p>}
             </div>
           </div>
         </div>
@@ -2560,10 +2986,16 @@ function UsersPanel({ api, onMessage }: { api: ReturnType<typeof useApi>; onMess
   const [items, setItems] = useState<UserAccount[]>([])
   const [form, setForm] = useState(emptyForm)
   const [editingId, setEditingId] = useState<number | null>(null)
+  const [sort, setSort] = useState<SortConfig<'name' | 'username' | 'email' | 'role' | 'status'>>({ key: 'name', direction: 'asc' })
   const load = () => api.get('/users').then((r) => setItems(r.data))
   useEffect(() => { load() }, [])
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
+    if (notifyUnsafeFields([
+      { label: 'Usuario', value: form.username },
+      { label: 'Correo electronico', value: form.email },
+      { label: 'Nombre completo', value: form.fullName },
+    ], onMessage)) return
     try {
       const payload = clean({ ...form, password: form.password || undefined })
       if (editingId) {
@@ -2594,6 +3026,13 @@ function UsersPanel({ api, onMessage }: { api: ReturnType<typeof useApi>; onMess
     }
   }
   const cancelEdit = () => { setEditingId(null); setForm(emptyForm) }
+  const sortedItems = sortItems(items, (item) => {
+    if (sort.key === 'username') return item.username
+    if (sort.key === 'email') return item.email
+    if (sort.key === 'role') return item.role.name
+    if (sort.key === 'status') return item.isActive ? 1 : 0
+    return item.fullName
+  }, sort.direction)
   return (
     <CrudLayout title={editingId ? 'Editar usuario' : 'Usuarios del sistema'} icon={<Users />} onSubmit={submit} submitLabel={editingId ? 'Actualizar usuario' : 'Crear usuario'} onCancel={editingId ? cancelEdit : undefined}>
       <input className="field" placeholder="Usuario de acceso" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} required />
@@ -2607,8 +3046,21 @@ function UsersPanel({ api, onMessage }: { api: ReturnType<typeof useApi>; onMess
         <input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
         Usuario activo
       </label>
+      <div className="md:col-span-2">
+        <SortControls
+          options={[
+            { key: 'name', label: 'Nombre' },
+            { key: 'username', label: 'Usuario' },
+            { key: 'email', label: 'Correo' },
+            { key: 'role', label: 'Rol' },
+            { key: 'status', label: 'Estado' },
+          ]}
+          config={sort}
+          onChange={setSort}
+        />
+      </div>
       <List>
-        {items.map((item) => (
+        {sortedItems.map((item) => (
           <Row
             key={item.id}
             title={`${item.fullName} (${item.username})`}
@@ -2780,6 +3232,7 @@ function WhatsappInbox({ api, onMessage, onDraft, currentRole }: { api: ReturnTy
   const [conversationDraft, setConversationDraft] = useState('')
   const [filter, setFilter] = useState<'ALL' | 'RESPONDED' | 'ACCEPTED' | 'REJECTED' | 'PENDING'>('ALL')
   const [channelFilter, setChannelFilter] = useState<'ALL' | string>('ALL')
+  const [sort, setSort] = useState<SortConfig<'date' | 'client' | 'phone' | 'channel' | 'order'>>({ key: 'date', direction: 'desc' })
 
   useEffect(() => {
     const load = () => {
@@ -2872,17 +3325,31 @@ function WhatsappInbox({ api, onMessage, onDraft, currentRole }: { api: ReturnTy
     })
   }, [channelFilter, conversations, filter, search])
 
+  const sortedConversations = useMemo(() => {
+    return sortItems(
+      filteredConversations,
+      (conversation) => {
+        if (sort.key === 'date') return new Date(conversation.lastMessageAt).getTime()
+        if (sort.key === 'client') return conversation.displayName
+        if (sort.key === 'phone') return conversation.phoneDigits
+        if (sort.key === 'channel') return conversation.channelLabel
+        return conversation.order?.orderCode ?? ''
+      },
+      sort.direction,
+    )
+  }, [filteredConversations, sort])
+
   useEffect(() => {
-    if (!filteredConversations.length) {
+    if (!sortedConversations.length) {
       setSelectedConversationKey('')
       return
     }
-    if (!selectedConversationKey || !filteredConversations.some((conversation) => conversation.conversationKey === selectedConversationKey)) {
-      setSelectedConversationKey(filteredConversations[0].conversationKey)
+    if (!selectedConversationKey || !sortedConversations.some((conversation) => conversation.conversationKey === selectedConversationKey)) {
+      setSelectedConversationKey(sortedConversations[0].conversationKey)
     }
-  }, [filteredConversations, selectedConversationKey])
+  }, [selectedConversationKey, sortedConversations])
 
-  const selectedConversation = filteredConversations.find((conversation) => conversation.conversationKey === selectedConversationKey)
+  const selectedConversation = sortedConversations.find((conversation) => conversation.conversationKey === selectedConversationKey)
   const canReplySelectedChannel = !selectedConversation || selectedConversation.channelKey !== 'SALES_SUPPORT' || ['ADMIN', 'TECNICO'].includes(currentRole)
 
   const openConversationDraft = () => {
@@ -2917,7 +3384,7 @@ function WhatsappInbox({ api, onMessage, onDraft, currentRole }: { api: ReturnTy
           <div className="wa-sidebar-header">
             <div>
               <h3>WhatsApp</h3>
-              <span>{filteredConversations.length} chats registrados</span>
+              <span>{sortedConversations.length} chats registrados</span>
             </div>
             <MessageCircle className="h-5 w-5" />
           </div>
@@ -2942,8 +3409,19 @@ function WhatsappInbox({ api, onMessage, onDraft, currentRole }: { api: ReturnTy
               </button>
             ))}
           </div>
+          <SortControls
+            options={[
+              { key: 'date', label: 'Fecha' },
+              { key: 'client', label: 'Cliente' },
+              { key: 'phone', label: 'Telefono' },
+              { key: 'channel', label: 'Canal' },
+              { key: 'order', label: 'Orden' },
+            ]}
+            config={sort}
+            onChange={setSort}
+          />
           <div className="wa-chat-list">
-            {filteredConversations.length ? filteredConversations.map((conversation) => {
+            {sortedConversations.length ? sortedConversations.map((conversation) => {
               const latest = conversation.items[conversation.items.length - 1]
               return (
                 <button key={conversation.conversationKey} className={`wa-chat-item ${conversation.conversationKey === selectedConversationKey ? 'active' : ''}`} onClick={() => setSelectedConversationKey(conversation.conversationKey)}>
@@ -3163,6 +3641,47 @@ function Row({ title, subtitle, actions }: { title: string; subtitle: string; ac
   )
 }
 
+function SortControls<T extends string,>({
+  options,
+  config,
+  onChange,
+}: {
+  options: SortOption<T>[]
+  config: SortConfig<T>
+  onChange: (next: SortConfig<T>) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+      <span className="text-xs font-extrabold uppercase text-slate-500">Ordenar</span>
+      {options.map((option) => {
+        const active = config.key === option.key
+        const Icon = active ? (config.direction === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown
+        return (
+          <button
+            key={option.key}
+            type="button"
+            className={`inline-flex items-center gap-1 rounded-md px-3 py-2 text-sm font-extrabold ${active ? 'bg-sky-600 text-white' : 'bg-white text-slate-700 hover:bg-sky-50'}`}
+            title={`Ordenar por ${option.label}`}
+            onClick={() => onChange(active ? { key: option.key, direction: config.direction === 'asc' ? 'desc' : 'asc' } : { key: option.key, direction: 'asc' })}
+          >
+            {option.label}
+            <Icon className="h-4 w-4" />
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function sortItems<T>(items: T[], selector: (item: T) => string | number | null | undefined, direction: SortDirection) {
+  return [...items].sort((left, right) => compareSortValue(selector(left), selector(right)) * (direction === 'asc' ? 1 : -1))
+}
+
+function compareSortValue(left: string | number | null | undefined, right: string | number | null | undefined) {
+  if (typeof left === 'number' || typeof right === 'number') return Number(left ?? 0) - Number(right ?? 0)
+  return String(left ?? '').localeCompare(String(right ?? ''), 'es-GT', { numeric: true, sensitivity: 'base' })
+}
+
 function EvidenceImage({ api, orderId, evidence }: { api: ReturnType<typeof useApi>; orderId: number; evidence: Evidence }) {
   const [url, setUrl] = useState('')
   useEffect(() => {
@@ -3195,6 +3714,7 @@ function WhatsappPreviewModal({ api, draft, onClose, onMessage }: { api: ReturnT
   const [sending, setSending] = useState(false)
 
   const openInOfficialWeb = () => {
+    if (notifyUnsafeFields([{ label: 'Mensaje de WhatsApp', value: draft.message }], onMessage)) return
     const url = `https://wa.me/${draft.phone}?text=${encodeURIComponent(draft.message)}`
     window.open(url, '_blank', 'noopener,noreferrer')
     onMessage('Vista previa aprobada. El mensaje se abrio en WhatsApp Web para envio manual.')
@@ -3202,6 +3722,7 @@ function WhatsappPreviewModal({ api, draft, onClose, onMessage }: { api: ReturnT
   }
 
   const sendLinked = async () => {
+    if (notifyUnsafeFields([{ label: 'Mensaje de WhatsApp', value: draft.message }], onMessage)) return
     try {
       setSending(true)
       const { data } = await api.post('/whatsapp/send', { orderId: draft.orderId, phone: draft.phone, message: draft.message, channelKey: draft.channelKey ?? 'ORDERS' })
@@ -3271,8 +3792,8 @@ function shouldPreserveInputValue(key: string) {
 function errorMessage(error: unknown) {
   if (axios.isAxiosError(error)) {
     const message = error.response?.data?.message
-    if (Array.isArray(message)) return message.join(', ')
-    return message ?? error.message
+    if (Array.isArray(message)) return normalizeSecurityErrorText(message.join(', '))
+    return normalizeSecurityErrorText(message ?? error.message)
   }
   return 'No se pudo completar la accion solicitada'
 }
